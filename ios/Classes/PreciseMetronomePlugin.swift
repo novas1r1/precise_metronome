@@ -63,6 +63,14 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
             requireEngine(result)?.setAccentPattern(pattern)
             result(nil)
 
+        case "setSubdivision":
+            guard let args = call.arguments as? [String: Any],
+                  let ppb = args["pulsesPerBeat"] as? Int else {
+                result(argError("pulsesPerBeat: Int")); return
+            }
+            requireEngine(result)?.setSubdivision(pulsesPerBeat: ppb)
+            result(nil)
+
         case "setVoice":
             guard let args = call.arguments as? [String: Any],
                   let voice = args["voice"] as? String else {

@@ -16,7 +16,15 @@ enum ClickVoice: String {
 struct ClickBuffers {
     let accent: AVAudioPCMBuffer
     let normal: AVAudioPCMBuffer
+    /// Soft click used for subdivision pulses between main beats.
+    /// Same waveform as `normal`, rendered at reduced amplitude.
+    let sub: AVAudioPCMBuffer
 }
+
+/// Relative amplitude of subdivision (sub) pulses compared to a normal
+/// beat. 0.5 gives a clearly audible "and-a" without overpowering the
+/// main beat.
+private let kSubAmplitudeScale: Float = 0.5
 
 enum ClickSynth {
 
@@ -33,18 +41,23 @@ enum ClickSynth {
 
         let accent: AVAudioPCMBuffer?
         let normal: AVAudioPCMBuffer?
+        let sub: AVAudioPCMBuffer?
 
         switch voice {
         case .tone:
             accent = renderTone(format: format, frequency: 1500.0, amplitude: 0.85)
             normal = renderTone(format: format, frequency: 1000.0, amplitude: 0.55)
+            sub    = renderTone(format: format, frequency: 1000.0,
+                                amplitude: 0.55 * kSubAmplitudeScale)
         case .click:
             accent = renderClick(format: format, transientHz: 2000.0, amplitude: 0.85)
             normal = renderClick(format: format, transientHz: 1500.0, amplitude: 0.55)
+            sub    = renderClick(format: format, transientHz: 1500.0,
+                                 amplitude: 0.55 * kSubAmplitudeScale)
         }
 
-        guard let a = accent, let n = normal else { return nil }
-        return ClickBuffers(accent: a, normal: n)
+        guard let a = accent, let n = normal, let s = sub else { return nil }
+        return ClickBuffers(accent: a, normal: n, sub: s)
     }
 
     // MARK: - Tone voice: pitched burst, exponential decay ~30 ms.

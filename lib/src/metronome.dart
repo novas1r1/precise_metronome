@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 
 import 'background_config.dart';
+import 'subdivision.dart';
 import 'time_signature.dart';
 import 'voice.dart';
 
@@ -37,6 +38,7 @@ class Metronome {
   double _bpm = 120.0;
   TimeSignature _timeSignature = TimeSignature(4, 4);
   List<bool> _accentPattern = const [true, false, false, false];
+  Subdivision _subdivision = Subdivision.none;
   MetronomeVoice _voice = MetronomeVoice.tone;
   double _volume = 0.8;
 
@@ -51,6 +53,12 @@ class Metronome {
 
   /// Current accent pattern. Length always equals `timeSignature.beatsPerBar`.
   List<bool> get accentPattern => List.unmodifiable(_accentPattern);
+
+  /// Current subdivision. Each main beat is split into
+  /// `subdivision.pulsesPerBeat` pulses; the first pulse of each beat
+  /// uses the accent/normal click, remaining pulses use a softer
+  /// "sub" click.
+  Subdivision get subdivision => _subdivision;
 
   /// Current click voice.
   MetronomeVoice get voice => _voice;
@@ -140,6 +148,23 @@ class Metronome {
     });
   }
 
+  /// Sets the subdivision — how each main beat is split into audible
+  /// pulses.
+  ///
+  /// The first pulse of each beat uses the accent or normal click (per
+  /// the current accent pattern); additional pulses use a softer "sub"
+  /// click. The tempo continues to refer to the main-beat rate.
+  ///
+  /// See [Subdivision] for the available options. Changes take effect
+  /// at the next pulse boundary (within one main-beat interval).
+  Future<void> setSubdivision(Subdivision subdivision) async {
+    _assertReady();
+    _subdivision = subdivision;
+    await _channel.invokeMethod<void>('setSubdivision', {
+      'pulsesPerBeat': subdivision.pulsesPerBeat,
+    });
+  }
+
   /// Switches between the built-in voices.
   Future<void> setVoice(MetronomeVoice voice) async {
     _assertReady();
@@ -211,6 +236,9 @@ class Metronome {
       'denominator': _timeSignature.denominator,
       'beatsPerBar': _timeSignature.beatsPerBar,
       'accentPattern': _accentPattern,
+    });
+    await _channel.invokeMethod<void>('setSubdivision', {
+      'pulsesPerBeat': _subdivision.pulsesPerBeat,
     });
     await _channel.invokeMethod<void>('setVoice', {'voice': _voice.wireName});
     await _channel.invokeMethod<void>('setVolume', {'volume': _volume});

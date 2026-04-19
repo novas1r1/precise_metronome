@@ -18,6 +18,7 @@ once at init. No per-beat allocations on the audio thread.
 - Sample-accurate scheduling via a 25 ms look-ahead loop
 - Time signatures with smart compound-meter defaults (6/8 → 2 beats, 9/8 → 3, 12/8 → 4)
 - Arbitrary accent patterns
+- Subdivisions (duple / triplet / quadruple) with softer sub-clicks between main beats
 - Two procedural click voices (no bundled audio assets)
 - Tempo range 20–400 BPM
 - Tap tempo
@@ -42,6 +43,7 @@ await metronome.init();
 await metronome.setTempo(120);
 await metronome.setTimeSignature(TimeSignature(7, 8));
 await metronome.setAccentPattern([true, false, false, true, false, true, false]);
+await metronome.setSubdivision(Subdivision.duple);   // eighth-note subdivisions
 await metronome.setVoice(MetronomeVoice.tone);
 await metronome.setVolume(0.8);
 
@@ -140,8 +142,6 @@ kotlinOptions {
 
 Not yet included, easy to add later:
 
-- Subdivisions (8ths, 16ths, triplets). Engine internals already support
-  fractional-frame scheduling.
 - `beatStream` for UI sync.
 - Tempo ramps, practice modes (progressive, random-mute).
 - User-supplied WAV samples.

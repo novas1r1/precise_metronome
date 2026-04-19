@@ -25,13 +25,15 @@ final class MetronomeEngine {
     private var bpm: Double = 120.0
     private var beatsPerBar: Int = 4
     private var accentPattern: [Bool] = [true, false, false, false]
+    private var pulsesPerBeat: Int = 1
 
     private var currentVoice: ClickVoice = .tone
     private var buffers: ClickBuffers?
 
     private var isPlaying = false
     private var beatIndexInBar = 0
-    private var nextBeatSampleTime: AVAudioFramePosition = 0
+    private var pulseIndexInBeat = 0
+    private var nextPulseSampleTime: AVAudioFramePosition = 0
     private var hasAnchor = false
 
     // Scheduling constants.
@@ -77,6 +79,7 @@ final class MetronomeEngine {
             guard !self.isPlaying else { return }
             self.isPlaying = true
             self.beatIndexInBar = 0
+            self.pulseIndexInBeat = 0
             self.hasAnchor = false
             self.playerNode.play()
             self.startTimer()
@@ -105,6 +108,7 @@ final class MetronomeEngine {
             self.accentPattern = accentPattern
             if self.beatIndexInBar >= beatsPerBar {
                 self.beatIndexInBar = 0
+                self.pulseIndexInBeat = 0
             }
         }
     }
@@ -116,6 +120,18 @@ final class MetronomeEngine {
             if pattern.count == self.beatsPerBar {
                 self.accentPattern = pattern
             }
+        }
+    }
+
+    func setSubdivision(pulsesPerBeat: Int) {
+        serialQueue.async { [weak self] in
+            guard let self = self else { return }
+            let p = max(1, min(pulsesPerBeat, 16))
+            self.pulsesPerBeat = p
+            // Reset the sub-beat cursor so the next pulse starts cleanly on
+            // a beat boundary. Keeps the main-beat index stable so the
+            // listener doesn't jump inside the bar.
+            self.pulseIndexInBeat = 0
         }
     }
 
@@ -227,27 +243,45 @@ final class MetronomeEngine {
         let currentSampleTime: AVAudioFramePosition = playerTime.sampleTime
 
         if !hasAnchor {
-            // First scheduling opportunity: anchor the next beat a little
+            // First scheduling opportunity: anchor the next pulse a little
             // ahead of "now" so the first click is guaranteed schedulable.
-            nextBeatSampleTime = currentSampleTime + AVAudioFramePosition(0.05 * sampleRate)
+            nextPulseSampleTime = currentSampleTime + AVAudioFramePosition(0.05 * sampleRate)
             hasAnchor = true
         }
 
         let horizon = currentSampleTime + AVAudioFramePosition(lookaheadSeconds * sampleRate)
 
-        while nextBeatSampleTime < horizon {
-            let accent: Bool = beatIndexInBar < accentPattern.count
-                ? accentPattern[beatIndexInBar]
-                : (beatIndexInBar == 0)
-            let buffer = accent ? buffers.accent : buffers.normal
+        while nextPulseSampleTime < horizon {
+            let buffer: AVAudioPCMBuffer
+            if pulseIndexInBeat == 0 {
+                // Main beat: pick accent or normal from the pattern.
+                let accent: Bool = beatIndexInBar < accentPattern.count
+                    ? accentPattern[beatIndexInBar]
+                    : (beatIndexInBar == 0)
+                buffer = accent ? buffers.accent : buffers.normal
+            } else {
+                // Off-beat subdivision pulse: softer sub click.
+                buffer = buffers.sub
+            }
 
-            let when = AVAudioTime(sampleTime: nextBeatSampleTime, atRate: sampleRate)
+            let when = AVAudioTime(sampleTime: nextPulseSampleTime, atRate: sampleRate)
             playerNode.scheduleBuffer(buffer, at: when, options: [], completionHandler: nil)
 
-            // Advance.
-            beatIndexInBar = (beatIndexInBar + 1) % max(beatsPerBar, 1)
-            let framesPerBeat = AVAudioFramePosition((60.0 / bpm) * sampleRate)
-            nextBeatSampleTime += framesPerBeat
+            // Advance pulse / beat counters.
+            let ppb = max(pulsesPerBeat, 1)
+            pulseIndexInBeat += 1
+            if pulseIndexInBeat >= ppb {
+                pulseIndexInBeat = 0
+                beatIndexInBar = (beatIndexInBar + 1) % max(beatsPerBar, 1)
+            }
+
+            // framesPerPulse = (60 / bpm / pulsesPerBeat) * sampleRate.
+            // Compute in double so triplet rates don't drift by integer-division
+            // rounding; cast once at the end.
+            let framesPerPulse = AVAudioFramePosition(
+                (60.0 / bpm / Double(ppb)) * sampleRate
+            )
+            nextPulseSampleTime += max(framesPerPulse, 1)
         }
     }
 }

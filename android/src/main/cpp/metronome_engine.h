@@ -26,6 +26,7 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     void set_tempo(double bpm);
     void set_time_signature(int beats_per_bar, const bool* pattern, int length);
     void set_accent_pattern(const bool* pattern, int length);
+    void set_subdivision(int pulses_per_beat);
     void set_voice(int voice_index);
     void set_volume(double volume);
 
@@ -54,10 +55,14 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     // Parameters mutated from Flutter thread, read from audio thread.
     std::atomic<double> bpm_{120.0};
     std::atomic<int> beats_per_bar_{4};
+    std::atomic<int> pulses_per_beat_{1};
     std::atomic<int> voice_index_{0};
     std::atomic<double> volume_{0.8};
     std::atomic<bool> playing_{false};
     std::atomic<bool> reset_requested_{false};
+    // Set to true when a subdivision change requires the audio thread to
+    // snap to a clean beat boundary on its next pulse.
+    std::atomic<bool> realign_pulse_requested_{false};
 
     // Accent pattern: fixed-size array + atomic length.
     // Writes from Flutter thread are not strictly atomic per-element, but the
@@ -75,8 +80,9 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
 
     // Audio-thread-only state.
     int64_t frames_rendered_ = 0;
-    int64_t next_beat_frame_ = 0;
+    int64_t next_pulse_frame_ = 0;
     int beat_index_in_bar_ = 0;
+    int pulse_index_in_beat_ = 0;
     bool has_anchor_ = false;
 
     struct ActiveClick {

@@ -31,8 +31,31 @@ void main() {
     // After init, defaults should be pushed.
     expect(methods, contains('setTempo'));
     expect(methods, contains('setTimeSignature'));
+    expect(methods, contains('setSubdivision'));
     expect(methods, contains('setVoice'));
     expect(methods, contains('setVolume'));
+  });
+
+  test('default subdivision is none', () async {
+    final m = Metronome();
+    await m.init();
+    expect(m.subdivision, Subdivision.none);
+
+    final subdivCall =
+        calls.firstWhere((c) => c.method == 'setSubdivision');
+    expect((subdivCall.arguments as Map)['pulsesPerBeat'], 1);
+  });
+
+  test('setSubdivision sends pulsesPerBeat', () async {
+    final m = Metronome();
+    await m.init();
+    calls.clear();
+
+    await m.setSubdivision(Subdivision.triplet);
+    expect(m.subdivision, Subdivision.triplet);
+
+    final call = calls.firstWhere((c) => c.method == 'setSubdivision');
+    expect((call.arguments as Map)['pulsesPerBeat'], 3);
   });
 
   test('setTempo validates range', () async {

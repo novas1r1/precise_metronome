@@ -132,6 +132,15 @@ void MetronomeEngine::set_accent_pattern(const bool* pattern, int length) {
     pattern_length_.store(clamped, std::memory_order_release);
 }
 
+void MetronomeEngine::set_subdivision(int pulses_per_beat) {
+    const int clamped = std::max(1, std::min(pulses_per_beat, 16));
+    pulses_per_beat_.store(clamped, std::memory_order_release);
+    // Ask the audio thread to reset its in-beat pulse cursor so the next
+    // pulse falls cleanly on a beat boundary. Cheaper than a full reset —
+    // we keep the bar-level beat index unchanged.
+    realign_pulse_requested_.store(true, std::memory_order_release);
+}
+
 void MetronomeEngine::set_voice(int voice_index) {
     if (voice_index < 0 || voice_index > 1) return;
     voice_index_.store(voice_index, std::memory_order_relaxed);
@@ -184,7 +193,13 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
     if (reset_requested_.exchange(false, std::memory_order_acq_rel)) {
         has_anchor_ = false;
         beat_index_in_bar_ = 0;
+        pulse_index_in_beat_ = 0;
         active_clicks_.clear();
+    }
+
+    // Subdivision change: snap to a clean beat boundary at the next pulse.
+    if (realign_pulse_requested_.exchange(false, std::memory_order_acq_rel)) {
+        pulse_index_in_beat_ = 0;
     }
 
     const float volume = static_cast<float>(
@@ -192,6 +207,7 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
     const int voice = voice_index_.load(std::memory_order_relaxed);
     const auto& accent_buf = buffers_current_[voice].accent;
     const auto& normal_buf = buffers_current_[voice].normal;
+    const auto& sub_buf    = buffers_current_[voice].sub;
 
     const bool is_playing = playing_.load(std::memory_order_acquire);
 
@@ -213,35 +229,45 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         }
     }
 
-    // --- 2. Schedule new beats falling within this callback's buffer. ---
+    // --- 2. Schedule new pulses falling within this callback's buffer. ---
     if (is_playing) {
         const int64_t buf_start = frames_rendered_;
         const int64_t buf_end   = frames_rendered_ + num_frames;
 
         if (!has_anchor_) {
-            // First buffer of this play session: anchor the first beat
+            // First buffer of this play session: anchor the first pulse
             // slightly ahead so we're guaranteed to fit it within the buffer
             // (but not so far that we feel delayed).
-            next_beat_frame_ =
+            next_pulse_frame_ =
                 buf_start +
                 static_cast<int64_t>(0.010 * sample_rate_);
             has_anchor_ = true;
         }
 
-        while (next_beat_frame_ < buf_end) {
-            if (next_beat_frame_ >= buf_start) {
+        while (next_pulse_frame_ < buf_end) {
+            if (next_pulse_frame_ >= buf_start) {
                 const int offset =
-                    static_cast<int>(next_beat_frame_ - buf_start);
+                    static_cast<int>(next_pulse_frame_ - buf_start);
 
-                const int pattern_len =
-                    pattern_length_.load(std::memory_order_acquire);
-                const int idx = (pattern_len > 0)
-                                    ? (beat_index_in_bar_ % pattern_len)
-                                    : 0;
-                const bool accent = (idx < kMaxPattern)
-                                        ? accent_pattern_[idx]
-                                        : (idx == 0);
-                const auto& src = accent ? accent_buf : normal_buf;
+                // Pick the buffer for this pulse. Main beat (pulse 0 within
+                // the beat) uses accent/normal per the pattern; off-beat
+                // subdivision pulses use the sub buffer.
+                const std::vector<float>* src_ptr = nullptr;
+                if (pulse_index_in_beat_ == 0) {
+                    const int pattern_len =
+                        pattern_length_.load(std::memory_order_acquire);
+                    const int idx = (pattern_len > 0)
+                                        ? (beat_index_in_bar_ % pattern_len)
+                                        : 0;
+                    const bool accent = (idx < kMaxPattern)
+                                            ? accent_pattern_[idx]
+                                            : (idx == 0);
+                    src_ptr = accent ? &accent_buf : &normal_buf;
+                } else {
+                    src_ptr = &sub_buf;
+                }
+
+                const auto& src = *src_ptr;
                 const int src_len = static_cast<int>(src.size());
                 if (src_len > 0) {
                     const int fits_in_buffer =
@@ -260,14 +286,23 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
                 }
             }
 
+            // Advance pulse / beat counters.
             const int bpb = std::max(
                 beats_per_bar_.load(std::memory_order_relaxed), 1);
-            beat_index_in_bar_ = (beat_index_in_bar_ + 1) % bpb;
+            const int ppb = std::max(
+                pulses_per_beat_.load(std::memory_order_relaxed), 1);
+
+            ++pulse_index_in_beat_;
+            if (pulse_index_in_beat_ >= ppb) {
+                pulse_index_in_beat_ = 0;
+                beat_index_in_bar_ = (beat_index_in_bar_ + 1) % bpb;
+            }
 
             const double bpm = bpm_.load(std::memory_order_relaxed);
-            const int64_t frames_per_beat = static_cast<int64_t>(
-                (60.0 / bpm) * static_cast<double>(sample_rate_));
-            next_beat_frame_ += (frames_per_beat > 0 ? frames_per_beat : 1);
+            const int64_t frames_per_pulse = static_cast<int64_t>(
+                (60.0 / bpm / static_cast<double>(ppb)) *
+                static_cast<double>(sample_rate_));
+            next_pulse_frame_ += (frames_per_pulse > 0 ? frames_per_pulse : 1);
         }
     } else {
         // Not playing: make sure we'll re-anchor when we resume.

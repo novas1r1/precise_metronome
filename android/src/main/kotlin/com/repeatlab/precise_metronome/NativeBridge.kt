@@ -27,6 +27,7 @@ internal object NativeBridge {
         handle: Long,
         accentPattern: BooleanArray
     )
+    @JvmStatic external fun nativeSetSubdivision(handle: Long, pulsesPerBeat: Int)
     @JvmStatic external fun nativeSetVoice(handle: Long, voiceIndex: Int)
     @JvmStatic external fun nativeSetVolume(handle: Long, volume: Double)
 }

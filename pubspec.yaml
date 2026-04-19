@@ -2,7 +2,7 @@ name: precise_metronome
 description: A sample-accurate, production-grade Flutter metronome with a
   minimal headless API. Uses AVAudioEngine on iOS and Oboe on Android for
   sub-millisecond timing accuracy.
-version: 0.1.0
+version: 0.2.0
 homepage: https://github.com/repeatlab/precise_metronome
 repository: https://github.com/repeatlab/precise_metronome
 

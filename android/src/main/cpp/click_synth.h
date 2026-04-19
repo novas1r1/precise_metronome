@@ -10,11 +10,14 @@ enum class ClickVoice : int {
     Click = 1,
 };
 
-// Renders an accent + normal click buffer for a voice at the given sample rate.
-// Buffers are mono Float32 and reproducibly synthesized (no RNG seed drift).
+// Renders accent + normal + sub click buffers for a voice at the given
+// sample rate. Buffers are mono Float32 and reproducibly synthesized
+// (no RNG seed drift). The `sub` buffer is the same waveform as
+// `normal`, rendered at reduced amplitude for subdivision pulses.
 struct ClickBuffers {
     std::vector<float> accent;  // mono samples
     std::vector<float> normal;
+    std::vector<float> sub;
 };
 
 ClickBuffers render_click_buffers(ClickVoice voice, double sample_rate);

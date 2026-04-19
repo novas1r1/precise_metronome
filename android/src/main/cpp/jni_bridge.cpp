@@ -82,6 +82,13 @@ Java_com_repeatlab_precise_1metronome_NativeBridge_nativeSetAccentPattern(
 }
 
 JNIEXPORT void JNICALL
+Java_com_repeatlab_precise_1metronome_NativeBridge_nativeSetSubdivision(
+    JNIEnv* /*env*/, jclass /*clazz*/, jlong handle, jint pulses_per_beat) {
+    if (handle == 0) return;
+    reinterpret_cast<MetronomeEngine*>(handle)->set_subdivision(pulses_per_beat);
+}
+
+JNIEXPORT void JNICALL
 Java_com_repeatlab_precise_1metronome_NativeBridge_nativeSetVoice(
     JNIEnv* /*env*/, jclass /*clazz*/, jlong handle, jint voice_index) {
     if (handle == 0) return;

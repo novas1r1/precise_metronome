@@ -116,6 +116,22 @@ class PreciseMetronomePlugin :
                     }
                 }
 
+                "setSubdivision" -> {
+                    val ppb = call.argument<Int>("pulsesPerBeat")
+                    if (ppb == null) {
+                        result.error(
+                            "bad_arguments",
+                            "pulsesPerBeat: Int required",
+                            null
+                        )
+                        return
+                    }
+                    requireHandle(result)?.let {
+                        NativeBridge.nativeSetSubdivision(it, ppb)
+                        result.success(null)
+                    }
+                }
+
                 "setVoice" -> {
                     val voice = call.argument<String>("voice")
                     val idx = when (voice) {

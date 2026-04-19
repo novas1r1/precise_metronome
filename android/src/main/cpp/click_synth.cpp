@@ -119,15 +119,23 @@ std::vector<float> render_click(double sample_rate,
 }  // namespace
 
 ClickBuffers render_click_buffers(ClickVoice voice, double sample_rate) {
+    // Relative amplitude of subdivision pulses vs. a normal main-beat
+    // click. Matches the iOS value so both platforms sound the same.
+    constexpr float kSubAmplitudeScale = 0.5f;
+
     ClickBuffers out;
     switch (voice) {
         case ClickVoice::Tone:
             out.accent = render_tone(sample_rate, 1500.0, 0.85f);
             out.normal = render_tone(sample_rate, 1000.0, 0.55f);
+            out.sub    = render_tone(sample_rate, 1000.0,
+                                     0.55f * kSubAmplitudeScale);
             break;
         case ClickVoice::Click:
             out.accent = render_click(sample_rate, 2000.0, 0.85f);
             out.normal = render_click(sample_rate, 1500.0, 0.55f);
+            out.sub    = render_click(sample_rate, 1500.0,
+                                      0.55f * kSubAmplitudeScale);
             break;
     }
     return out;
