@@ -14,8 +14,9 @@ internal object NativeBridge {
     @JvmStatic external fun nativeDestroy(handle: Long)
 
     @JvmStatic external fun nativeInit(handle: Long): Boolean
-    @JvmStatic external fun nativeStart(handle: Long)
+    @JvmStatic external fun nativeStart(handle: Long, initialDelayMs: Long)
     @JvmStatic external fun nativeStop(handle: Long)
+    @JvmStatic external fun nativeNudge(handle: Long, deltaMs: Long)
 
     @JvmStatic external fun nativeSetTempo(handle: Long, bpm: Double)
     @JvmStatic external fun nativeSetTimeSignature(

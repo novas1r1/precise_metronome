@@ -33,9 +33,17 @@ Java_com_repeatlab_precise_1metronome_NativeBridge_nativeInit(
 
 JNIEXPORT void JNICALL
 Java_com_repeatlab_precise_1metronome_NativeBridge_nativeStart(
-    JNIEnv* /*env*/, jclass /*clazz*/, jlong handle) {
+    JNIEnv* /*env*/, jclass /*clazz*/, jlong handle,
+    jlong initial_delay_ms) {
     if (handle == 0) return;
-    reinterpret_cast<MetronomeEngine*>(handle)->start();
+    reinterpret_cast<MetronomeEngine*>(handle)->start(initial_delay_ms);
+}
+
+JNIEXPORT void JNICALL
+Java_com_repeatlab_precise_1metronome_NativeBridge_nativeNudge(
+    JNIEnv* /*env*/, jclass /*clazz*/, jlong handle, jlong delta_ms) {
+    if (handle == 0) return;
+    reinterpret_cast<MetronomeEngine*>(handle)->nudge(delta_ms);
 }
 
 JNIEXPORT void JNICALL

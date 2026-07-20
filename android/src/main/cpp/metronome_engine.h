@@ -19,9 +19,15 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     ~MetronomeEngine() override;
 
     bool initialize();
-    void start();
+    // First pulse fires `initial_delay_ms` later than it otherwise would.
+    void start(int64_t initial_delay_ms = 0);
     void stop();
     void dispose();
+
+    // Shifts the phase of all future pulses while playing; rolls forward by
+    // whole pulse periods if the shift would collide with an already-rendered
+    // pulse or land in the past. No-op (and cleared) when stopped.
+    void nudge(int64_t delta_ms);
 
     void set_tempo(double bpm);
     void set_time_signature(int beats_per_bar, const bool* pattern, int length);
@@ -60,6 +66,10 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     std::atomic<double> volume_{0.8};
     std::atomic<bool> playing_{false};
     std::atomic<bool> reset_requested_{false};
+    // Delay (in frames) applied to the anchor of the next play session.
+    std::atomic<int64_t> initial_delay_frames_{0};
+    // Accumulated phase shift (in frames) the audio thread has yet to apply.
+    std::atomic<int64_t> pending_nudge_frames_{0};
     // Set to true when a subdivision change requires the audio thread to
     // snap to a clean beat boundary on its next pulse.
     std::atomic<bool> realign_pulse_requested_{false};
@@ -81,6 +91,7 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     // Audio-thread-only state.
     int64_t frames_rendered_ = 0;
     int64_t next_pulse_frame_ = 0;
+    int64_t last_pulse_frame_ = 0;
     int beat_index_in_bar_ = 0;
     int pulse_index_in_beat_ = 0;
     bool has_anchor_ = false;

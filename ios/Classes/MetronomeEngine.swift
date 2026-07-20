@@ -34,7 +34,9 @@ final class MetronomeEngine {
     private var beatIndexInBar = 0
     private var pulseIndexInBeat = 0
     private var nextPulseSampleTime: AVAudioFramePosition = 0
+    private var lastScheduledPulseTime: AVAudioFramePosition = 0
     private var hasAnchor = false
+    private var initialDelayFrames: AVAudioFramePosition = 0
 
     // Scheduling constants.
     private let lookaheadSeconds: Double = 0.1   // schedule 100 ms ahead
@@ -73,7 +75,7 @@ final class MetronomeEngine {
         try engine.start()
     }
 
-    func start() {
+    func start(initialDelaySeconds: Double = 0) {
         serialQueue.async { [weak self] in
             guard let self = self else { return }
             guard !self.isPlaying else { return }
@@ -81,8 +83,37 @@ final class MetronomeEngine {
             self.beatIndexInBar = 0
             self.pulseIndexInBeat = 0
             self.hasAnchor = false
+            self.initialDelayFrames =
+                AVAudioFramePosition(max(0, initialDelaySeconds) * self.sampleRate)
             self.playerNode.play()
             self.startTimer()
+        }
+    }
+
+    /// Shifts the phase of all future pulses by `deltaSeconds` while playing.
+    /// If the shifted position would collide with the last already-scheduled
+    /// pulse or land in the past, rolls forward by whole pulse periods
+    /// (phase-equivalent) so pulses never double-fire.
+    func nudge(deltaSeconds: Double) {
+        serialQueue.async { [weak self] in
+            guard let self = self else { return }
+            guard self.isPlaying, self.hasAnchor else { return }
+
+            let framesPerPulse = self.currentFramesPerPulse()
+            var candidate = self.nextPulseSampleTime
+                + AVAudioFramePosition(deltaSeconds * self.sampleRate)
+
+            // Never fire closer than a quarter pulse after the last pulse we
+            // already handed to the player, and never in the past.
+            var minNext = self.lastScheduledPulseTime + max(framesPerPulse / 4, 1)
+            if let nodeTime = self.playerNode.lastRenderTime,
+               let playerTime = self.playerNode.playerTime(forNodeTime: nodeTime) {
+                minNext = max(minNext, playerTime.sampleTime + AVAudioFramePosition(0.01 * self.sampleRate))
+            }
+            while candidate < minNext {
+                candidate += max(framesPerPulse, 1)
+            }
+            self.nextPulseSampleTime = candidate
         }
     }
 
@@ -244,8 +275,12 @@ final class MetronomeEngine {
 
         if !hasAnchor {
             // First scheduling opportunity: anchor the next pulse a little
-            // ahead of "now" so the first click is guaranteed schedulable.
-            nextPulseSampleTime = currentSampleTime + AVAudioFramePosition(0.05 * sampleRate)
+            // ahead of "now" so the first click is guaranteed schedulable,
+            // plus any caller-requested initial delay.
+            nextPulseSampleTime = currentSampleTime
+                + AVAudioFramePosition(0.05 * sampleRate)
+                + initialDelayFrames
+            lastScheduledPulseTime = nextPulseSampleTime - currentFramesPerPulse()
             hasAnchor = true
         }
 
@@ -266,6 +301,7 @@ final class MetronomeEngine {
 
             let when = AVAudioTime(sampleTime: nextPulseSampleTime, atRate: sampleRate)
             playerNode.scheduleBuffer(buffer, at: when, options: [], completionHandler: nil)
+            lastScheduledPulseTime = nextPulseSampleTime
 
             // Advance pulse / beat counters.
             let ppb = max(pulsesPerBeat, 1)
@@ -275,13 +311,16 @@ final class MetronomeEngine {
                 beatIndexInBar = (beatIndexInBar + 1) % max(beatsPerBar, 1)
             }
 
-            // framesPerPulse = (60 / bpm / pulsesPerBeat) * sampleRate.
-            // Compute in double so triplet rates don't drift by integer-division
-            // rounding; cast once at the end.
-            let framesPerPulse = AVAudioFramePosition(
-                (60.0 / bpm / Double(ppb)) * sampleRate
-            )
-            nextPulseSampleTime += max(framesPerPulse, 1)
+            nextPulseSampleTime += max(currentFramesPerPulse(), 1)
         }
+    }
+
+    // framesPerPulse = (60 / bpm / pulsesPerBeat) * sampleRate.
+    // Compute in double so triplet rates don't drift by integer-division
+    // rounding; cast once at the end. Must only be called on serialQueue.
+    private func currentFramesPerPulse() -> AVAudioFramePosition {
+        AVAudioFramePosition(
+            (60.0 / bpm / Double(max(pulsesPerBeat, 1))) * sampleRate
+        )
     }
 }

@@ -51,6 +51,14 @@ await metronome.start();
 // ...
 await metronome.stop();
 
+// Align the click grid with external audio: delay the first click,
+// then shift the phase live while playing. Both are sample-accurate.
+await metronome.start(initialDelay: Duration(milliseconds: 120));
+await metronome.nudge(Duration(milliseconds: -25)); // clicks 25 ms earlier
+
+// setTempo while playing is phase-preserving: the next click keeps its
+// time, only the interval after it changes — safe to drive from a slider.
+
 // When done:
 await metronome.dispose();
 ```

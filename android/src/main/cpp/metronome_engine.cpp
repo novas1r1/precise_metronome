@@ -98,9 +98,18 @@ void MetronomeEngine::rebuild_buffers(double sample_rate) {
     buffers_pending_.store(true, std::memory_order_release);
 }
 
-void MetronomeEngine::start() {
+void MetronomeEngine::start(int64_t initial_delay_ms) {
+    const int64_t delay_frames =
+        std::max<int64_t>(initial_delay_ms, 0) * sample_rate_ / 1000;
+    initial_delay_frames_.store(delay_frames, std::memory_order_release);
     reset_requested_.store(true, std::memory_order_release);
     playing_.store(true, std::memory_order_release);
+}
+
+void MetronomeEngine::nudge(int64_t delta_ms) {
+    if (!playing_.load(std::memory_order_acquire)) return;
+    const int64_t delta_frames = delta_ms * sample_rate_ / 1000;
+    pending_nudge_frames_.fetch_add(delta_frames, std::memory_order_acq_rel);
 }
 
 void MetronomeEngine::stop() {
@@ -195,6 +204,8 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         beat_index_in_bar_ = 0;
         pulse_index_in_beat_ = 0;
         active_clicks_.clear();
+        // Nudges from a previous session must not leak into this one.
+        pending_nudge_frames_.store(0, std::memory_order_release);
     }
 
     // Subdivision change: snap to a clean beat boundary at the next pulse.
@@ -234,14 +245,43 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         const int64_t buf_start = frames_rendered_;
         const int64_t buf_end   = frames_rendered_ + num_frames;
 
+        const double bpm_now = bpm_.load(std::memory_order_relaxed);
+        const int ppb_now = std::max(
+            pulses_per_beat_.load(std::memory_order_relaxed), 1);
+        const int64_t frames_per_pulse_now = std::max<int64_t>(
+            static_cast<int64_t>(
+                (60.0 / bpm_now / static_cast<double>(ppb_now)) *
+                static_cast<double>(sample_rate_)),
+            1);
+
         if (!has_anchor_) {
             // First buffer of this play session: anchor the first pulse
             // slightly ahead so we're guaranteed to fit it within the buffer
-            // (but not so far that we feel delayed).
+            // (but not so far that we feel delayed), plus any
+            // caller-requested initial delay.
             next_pulse_frame_ =
                 buf_start +
-                static_cast<int64_t>(0.010 * sample_rate_);
+                static_cast<int64_t>(0.010 * sample_rate_) +
+                initial_delay_frames_.load(std::memory_order_acquire);
+            last_pulse_frame_ = next_pulse_frame_ - frames_per_pulse_now;
             has_anchor_ = true;
+        }
+
+        // Apply any pending phase nudge: shift the next pulse, but never
+        // fire closer than a quarter pulse after the last rendered pulse or
+        // in the past — roll forward by whole (phase-equivalent) periods.
+        const int64_t nudge_frames = pending_nudge_frames_.exchange(
+            0, std::memory_order_acq_rel);
+        if (nudge_frames != 0) {
+            int64_t candidate = next_pulse_frame_ + nudge_frames;
+            const int64_t min_next = std::max(
+                last_pulse_frame_ + std::max(frames_per_pulse_now / 4,
+                                             static_cast<int64_t>(1)),
+                buf_start);
+            while (candidate < min_next) {
+                candidate += frames_per_pulse_now;
+            }
+            next_pulse_frame_ = candidate;
         }
 
         while (next_pulse_frame_ < buf_end) {
@@ -302,6 +342,7 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
             const int64_t frames_per_pulse = static_cast<int64_t>(
                 (60.0 / bpm / static_cast<double>(ppb)) *
                 static_cast<double>(sample_rate_));
+            last_pulse_frame_ = next_pulse_frame_;
             next_pulse_frame_ += (frames_per_pulse > 0 ? frames_per_pulse : 1);
         }
     } else {

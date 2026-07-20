@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 — Phase control
+
+- `Metronome.start` gained an `initialDelay` parameter: the first click
+  fires that much later than it otherwise would, applied with sample
+  accuracy on the native side. Useful for aligning the click grid with
+  external audio.
+- Added `Metronome.nudge(Duration delta)`: shifts the phase of all
+  future clicks while playing (positive = later, negative = earlier).
+  If the shifted position would collide with an already-scheduled click
+  or land in the past, the engine rolls forward by whole pulse periods
+  (phase-equivalent) — clicks never double-fire.
+- Documented the phase-preservation guarantee of `setTempo`: the next
+  scheduled click keeps its time; only the subsequent interval changes.
+  Tempo sweeps (e.g. from a slider) never cause jumps or dropped clicks.
+
 ## 0.2.0 — Subdivisions
 
 - Added `Subdivision` (none / duple / triplet / quadruple) and
