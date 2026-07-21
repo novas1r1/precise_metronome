@@ -81,11 +81,43 @@ class Metronome {
   }
 
   /// Starts the metronome from bar position zero.
-  Future<void> start() async {
+  ///
+  /// If [initialDelay] is non-zero, the first click fires that much later
+  /// than it otherwise would — useful for aligning the click grid with
+  /// external audio whose first beat does not coincide with "now".
+  /// [initialDelay] must not be negative; it is applied with sample
+  /// accuracy on the native side.
+  Future<void> start({Duration initialDelay = Duration.zero}) async {
     _assertReady();
     if (_isPlaying) return;
-    await _channel.invokeMethod<void>('start');
+    if (initialDelay.isNegative) {
+      throw ArgumentError.value(
+        initialDelay,
+        'initialDelay',
+        'must not be negative',
+      );
+    }
+    await _channel.invokeMethod<void>('start', {
+      'initialDelayMs': initialDelay.inMilliseconds,
+    });
     _isPlaying = true;
+  }
+
+  /// Shifts the phase of all future clicks by [delta] while playing.
+  ///
+  /// Positive values move clicks later, negative values earlier. The bar
+  /// position (beat/pulse counters) is unaffected — only the click grid
+  /// moves. If the shifted position would collide with an already-scheduled
+  /// click or land in the past, the native side rolls forward by whole
+  /// pulse periods (phase-equivalent), so clicks never double-fire.
+  ///
+  /// No-op when the metronome is stopped.
+  Future<void> nudge(Duration delta) async {
+    _assertReady();
+    if (!_isPlaying) return;
+    await _channel.invokeMethod<void>('nudge', {
+      'deltaMs': delta.inMilliseconds,
+    });
   }
 
   /// Stops the metronome. The next [start] will begin at bar position zero.
@@ -101,6 +133,11 @@ class Metronome {
   /// [bpm] must be in the range 20.0..400.0. If the metronome is currently
   /// playing, the change takes effect at sample-accurate resolution at the
   /// next scheduling window (within ~25 ms).
+  ///
+  /// Tempo changes are phase-preserving: the already-scheduled next click
+  /// keeps its time, and only the interval between subsequent clicks
+  /// changes. Sweeping the tempo (e.g. from a slider) therefore never
+  /// causes clicks to jump, double-fire, or drop.
   Future<void> setTempo(double bpm) async {
     _assertReady();
     if (bpm < 20.0 || bpm > 400.0) {

@@ -46,6 +46,61 @@ void main() {
     expect((subdivCall.arguments as Map)['pulsesPerBeat'], 1);
   });
 
+  test('start() without delay sends initialDelayMs 0', () async {
+    final m = Metronome();
+    await m.init();
+    calls.clear();
+
+    await m.start();
+
+    final call = calls.firstWhere((c) => c.method == 'start');
+    expect((call.arguments as Map)['initialDelayMs'], 0);
+  });
+
+  test('start(initialDelay:) sends initialDelayMs', () async {
+    final m = Metronome();
+    await m.init();
+    calls.clear();
+
+    await m.start(initialDelay: const Duration(milliseconds: 250));
+
+    final call = calls.firstWhere((c) => c.method == 'start');
+    expect((call.arguments as Map)['initialDelayMs'], 250);
+    expect(m.isPlaying, isTrue);
+  });
+
+  test('start() rejects negative initialDelay', () async {
+    final m = Metronome();
+    await m.init();
+
+    expect(
+      () => m.start(initialDelay: const Duration(milliseconds: -1)),
+      throwsArgumentError,
+    );
+  });
+
+  test('nudge() sends deltaMs while playing', () async {
+    final m = Metronome();
+    await m.init();
+    await m.start();
+    calls.clear();
+
+    await m.nudge(const Duration(milliseconds: -25));
+
+    final call = calls.firstWhere((c) => c.method == 'nudge');
+    expect((call.arguments as Map)['deltaMs'], -25);
+  });
+
+  test('nudge() is a no-op when stopped', () async {
+    final m = Metronome();
+    await m.init();
+    calls.clear();
+
+    await m.nudge(const Duration(milliseconds: 25));
+
+    expect(calls.where((c) => c.method == 'nudge'), isEmpty);
+  });
+
   test('setSubdivision sends pulsesPerBeat', () async {
     final m = Metronome();
     await m.init();

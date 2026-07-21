@@ -54,8 +54,22 @@ class PreciseMetronomePlugin :
                 }
 
                 "start" -> {
+                    val initialDelayMs =
+                        call.argument<Number>("initialDelayMs")?.toLong() ?: 0L
                     requireHandle(result)?.let {
-                        NativeBridge.nativeStart(it)
+                        NativeBridge.nativeStart(it, initialDelayMs)
+                        result.success(null)
+                    }
+                }
+
+                "nudge" -> {
+                    val deltaMs = call.argument<Number>("deltaMs")?.toLong()
+                    if (deltaMs == null) {
+                        result.error("bad_arguments", "deltaMs: Int required", null)
+                        return
+                    }
+                    requireHandle(result)?.let {
+                        NativeBridge.nativeNudge(it, deltaMs)
                         result.success(null)
                     }
                 }

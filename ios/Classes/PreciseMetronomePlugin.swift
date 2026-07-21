@@ -31,7 +31,19 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
             }
 
         case "start":
-            requireEngine(result)?.start()
+            let args = call.arguments as? [String: Any]
+            let initialDelayMs = args?["initialDelayMs"] as? Int ?? 0
+            requireEngine(result)?.start(
+                initialDelaySeconds: Double(initialDelayMs) / 1000.0)
+            result(nil)
+
+        case "nudge":
+            guard let args = call.arguments as? [String: Any],
+                  let deltaMs = args["deltaMs"] as? Int else {
+                result(argError("deltaMs: Int")); return
+            }
+            requireEngine(result)?.nudge(
+                deltaSeconds: Double(deltaMs) / 1000.0)
             result(nil)
 
         case "stop":
