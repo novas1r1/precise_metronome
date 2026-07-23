@@ -49,8 +49,13 @@ bool MetronomeEngine::initialize() {
 
 bool MetronomeEngine::open_stream() {
     oboe::AudioStreamBuilder builder;
+    // Shared mode always: an exclusive (MMAP) stream bypasses the Android
+    // mixer and claims the output device, which can silently starve or
+    // stall other streams on some HALs — including the host app's own
+    // music playback. Clicks are scheduled ahead inside the stream, so the
+    // mixer path's extra fixed latency does not affect timing accuracy.
     builder.setDirection(oboe::Direction::Output)
-           ->setSharingMode(oboe::SharingMode::Exclusive)
+           ->setSharingMode(oboe::SharingMode::Shared)
            ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
            ->setFormat(oboe::AudioFormat::Float)
            ->setChannelCount(oboe::ChannelCount::Stereo)
@@ -61,16 +66,9 @@ bool MetronomeEngine::open_stream() {
 
     oboe::Result result = builder.openStream(stream_);
     if (result != oboe::Result::OK) {
-        LOGE("Failed to open stream (exclusive): %s",
+        LOGE("Failed to open stream (shared): %s",
              oboe::convertToText(result));
-        // Fall back to shared mode if exclusive isn't available on this device.
-        builder.setSharingMode(oboe::SharingMode::Shared);
-        result = builder.openStream(stream_);
-        if (result != oboe::Result::OK) {
-            LOGE("Failed to open stream (shared): %s",
-                 oboe::convertToText(result));
-            return false;
-        }
+        return false;
     }
 
     sample_rate_  = stream_->getSampleRate();

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 — Android: shared Oboe stream
+
+- The Android engine now always opens its Oboe stream in **shared** mode.
+  It previously requested an exclusive (MMAP) stream first, which on some
+  devices/HALs claims the output device and can silently starve or stall
+  other audio streams — including the host app's own music playback.
+  Clicks are scheduled ahead inside the stream, so the mixer path's extra
+  fixed latency does not affect timing accuracy.
+
 ## 0.3.0 — Phase control
 
 - `Metronome.start` gained an `initialDelay` parameter: the first click
