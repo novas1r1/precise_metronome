@@ -38,10 +38,10 @@ platform :ios, '15.0'
 
 Open `android/app/build.gradle` and:
 
-1. Set `minSdkVersion` to **28**:
+1. Set `minSdkVersion` to **26**:
    ```groovy
    defaultConfig {
-       minSdkVersion 28
+       minSdkVersion 26
        targetSdkVersion 34
    }
    ```

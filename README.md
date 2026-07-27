@@ -109,7 +109,8 @@ nicely alongside Spotify, YouTube, etc.
 
 ### Android
 
-Minimum SDK: **28** (Android 9).
+Minimum SDK: **26** (Android 8.0). API 26 is the floor because the engine
+relies on AAudio, which Oboe only uses from that level up.
 
 The plugin's `AndroidManifest.xml` already declares the permissions it
 needs — `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, and
@@ -135,7 +136,7 @@ kotlinOptions {
 1. **Native audio engines only.** iOS uses `AVAudioEngine` + an
    `AVAudioPlayerNode` scheduled via `AVAudioTime(sampleTime:atRate:)`.
    Android uses Oboe with a data callback at low-latency performance
-   mode (AAudio fast-path on all API 28+ devices).
+   mode (AAudio fast-path on all API 26+ devices).
 2. **Look-ahead scheduling.** A 25 ms tick loop (iOS) or direct frame
    computation in the Oboe callback (Android) schedules beats up to
    100 ms ahead, at exact sample positions. Scheduled buffers are

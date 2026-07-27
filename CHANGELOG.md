@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.3 — Android: lower minSdk to 26
+
+- Android `minSdk` dropped from 28 to **26** (Android 8.0). Nothing in the
+  plugin actually required API 28: Oboe switches to the AAudio fast path at
+  26, and the two version-sensitive call sites (`NotificationChannel`,
+  `startForeground` with a service type) are already guarded for O and Q
+  respectively. The `mediaPlayback` `foregroundServiceType` attribute needs
+  only `compileSdk` 29+, not `minSdk`.
+- Host apps can now ship down to Android 8.0 instead of 9.
+
 ## 0.3.1 — Android: shared Oboe stream
 
 - The Android engine now always opens its Oboe stream in **shared** mode.

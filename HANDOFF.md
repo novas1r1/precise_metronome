@@ -29,8 +29,9 @@ accuracy. May eventually be published to pub.dev — keep the API clean.
 5. **Smart compound-meter defaults.** 6/8 → 2 beats/bar, 9/8 → 3, 12/8
    → 4. Override via `TimeSignature.grouped(...)`.
 6. **Tempo range 20–400 BPM**, max 32 beats/bar.
-7. **iOS 15+, Android minSdk 28.** Android side assumes AAudio fast-path
-   is available on every target device.
+7. **iOS 15+, Android minSdk 26.** Android side assumes AAudio fast-path
+   is available on every target device; API 26 is where Oboe switches
+   from OpenSL ES to AAudio, so it is the floor.
 8. **Internal PPQN modeling** (engine uses frame-position math that
    subdivisions can slot into later) but v1 exposes beats only.
 9. **Audio session**: iOS `.playback` + `.mixWithOthers` so users can
