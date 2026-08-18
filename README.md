@@ -22,6 +22,7 @@ once at init. No per-beat allocations on the audio thread.
 - Two procedural click voices (no bundled audio assets)
 - Tempo range 20–400 BPM
 - Tap tempo
+- Tempo ramps ("speed trainer"): step from a start to a goal BPM every N bars, exactly on the bar line
 - Optional background playback (iOS audio session + Android foreground service)
 - Mixes with other audio by default — practice over backing tracks
 
@@ -71,6 +72,42 @@ final tap = TapTempo();
 // Call this on each tap:
 final bpm = tap.tap();
 if (bpm != null) await metronome.setTempo(bpm);
+```
+
+### Tempo ramp (speed trainer)
+
+Play a passage progressively faster: start at one tempo, hold it for a
+number of bars, step up (or down), repeat until the goal tempo has been
+played — then the metronome stops itself. The tempo change happens on the
+native side exactly on the bar line, so it is as sample-accurate as every
+other click.
+
+```dart
+final ramp = TempoRamp(
+  startBpm: 80,
+  goalBpm: 120,
+  stepBpm: 5,        // 80, 85, 90, ... 120 (last step is clamped to the goal)
+  barsPerStep: 4,    // hold each tempo for 4 bars
+);
+
+final sub = metronome.rampProgress.listen((p) {
+  print('step ${p.stepIndex + 1}/${p.totalSteps} — ${p.bpm} BPM');
+  if (p.finished) print('done, metronome stopped itself');
+});
+
+await metronome.startRamp(ramp);
+// ... call metronome.stop() to abort early.
+```
+
+`ramp.steps` gives you the full list of tempi up front, e.g. for a
+progress bar. `goalBpm` below `startBpm` ramps downwards.
+
+Leave out `goalBpm` for an open-ended ramp: the tempo keeps climbing by
+`stepBpm` until it reaches 400 BPM, holds there, and only ends when you
+call `stop()` — `RampProgress.totalSteps` is `null` in that case.
+
+```dart
+await metronome.startRamp(TempoRamp(startBpm: 90, stepBpm: 4, barsPerStep: 8));
 ```
 
 ### Background playback (optional)
@@ -152,7 +189,7 @@ kotlinOptions {
 Not yet included, easy to add later:
 
 - `beatStream` for UI sync.
-- Tempo ramps, practice modes (progressive, random-mute).
+- Practice modes beyond tempo ramps (random-mute, silent bars).
 - User-supplied WAV samples.
 - Web, macOS, Windows, Linux.
 - Auto-resume after phone-call interruptions.

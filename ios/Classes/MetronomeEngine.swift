@@ -1,6 +1,14 @@
 import Foundation
 import AVFoundation
 
+/// Progress of a running tempo ramp, reported after each tempo step and once
+/// more when the ramp has finished (the engine stops itself then).
+struct RampProgress {
+    let stepIndex: Int
+    let bpm: Double
+    let finished: Bool
+}
+
 /// Core audio engine. All audio scheduling happens on a dedicated serial
 /// queue; all state mutations coming in from Flutter are dispatched onto
 /// that queue so we never race the scheduler.
@@ -11,6 +19,9 @@ import AVFoundation
 /// `AVAudioTime(sampleTime:atRate:)` — AVAudioEngine plays them back at
 /// sample-accurate resolution.
 final class MetronomeEngine {
+
+    /// Called on an arbitrary queue whenever ramp progress changes.
+    var onRampProgress: ((RampProgress) -> Void)?
 
     // MARK: - Audio graph
     private let engine = AVAudioEngine()
@@ -37,6 +48,16 @@ final class MetronomeEngine {
     private var lastScheduledPulseTime: AVAudioFramePosition = 0
     private var hasAnchor = false
     private var initialDelayFrames: AVAudioFramePosition = 0
+
+    // Tempo ramp (all on serialQueue).
+    private var rampActive = false
+    private var rampGoalBpm: Double = 120
+    private var rampStopAtGoal = true
+    private var rampStepBpm: Double = 0
+    private var rampBarsPerStep = 1
+    private var rampBarsInStep = 0
+    private var rampStepIndex = 0
+    private var rampCurrentBpm: Double = 120
 
     // Scheduling constants.
     private let lookaheadSeconds: Double = 0.1   // schedule 100 ms ahead
@@ -78,16 +99,48 @@ final class MetronomeEngine {
     func start(initialDelaySeconds: Double = 0) {
         serialQueue.async { [weak self] in
             guard let self = self else { return }
-            guard !self.isPlaying else { return }
-            self.isPlaying = true
-            self.beatIndexInBar = 0
-            self.pulseIndexInBeat = 0
-            self.hasAnchor = false
-            self.initialDelayFrames =
-                AVAudioFramePosition(max(0, initialDelaySeconds) * self.sampleRate)
-            self.playerNode.play()
-            self.startTimer()
+            self.rampActive = false
+            self.beginSession(initialDelaySeconds: initialDelaySeconds)
         }
+    }
+
+    /// Like `start`, but steps the tempo from `startBpm` towards `goalBpm`
+    /// by `stepBpm` every `barsPerStep` bars (last step clamped to the
+    /// goal). With `stopAtGoal` it stops itself after the goal has been
+    /// played for `barsPerStep` bars; otherwise it holds the goal tempo
+    /// until `stop()`.
+    func startRamp(initialDelaySeconds: Double,
+                   startBpm: Double,
+                   goalBpm: Double,
+                   stopAtGoal: Bool,
+                   stepBpm: Double,
+                   barsPerStep: Int) {
+        serialQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.bpm = startBpm
+            self.rampCurrentBpm = startBpm
+            self.rampGoalBpm = goalBpm
+            self.rampStopAtGoal = stopAtGoal
+            self.rampStepBpm = stepBpm
+            self.rampBarsPerStep = max(barsPerStep, 1)
+            self.rampBarsInStep = 0
+            self.rampStepIndex = 0
+            self.rampActive = true
+            self.beginSession(initialDelaySeconds: initialDelaySeconds)
+        }
+    }
+
+    /// Must be called on serialQueue.
+    private func beginSession(initialDelaySeconds: Double) {
+        guard !isPlaying else { return }
+        isPlaying = true
+        beatIndexInBar = 0
+        pulseIndexInBeat = 0
+        hasAnchor = false
+        initialDelayFrames =
+            AVAudioFramePosition(max(0, initialDelaySeconds) * sampleRate)
+        playerNode.play()
+        startTimer()
     }
 
     /// Shifts the phase of all future pulses by `deltaSeconds` while playing.
@@ -122,6 +175,7 @@ final class MetronomeEngine {
             guard let self = self else { return }
             guard self.isPlaying else { return }
             self.isPlaying = false
+            self.rampActive = false
             self.timer?.cancel()
             self.timer = nil
             self.playerNode.stop()
@@ -309,9 +363,55 @@ final class MetronomeEngine {
             if pulseIndexInBeat >= ppb {
                 pulseIndexInBeat = 0
                 beatIndexInBar = (beatIndexInBar + 1) % max(beatsPerBar, 1)
+                if beatIndexInBar == 0, rampActive, rampBarCompleted() {
+                    finishRamp()
+                    return
+                }
             }
 
             nextPulseSampleTime += max(currentFramesPerPulse(), 1)
+        }
+    }
+
+    // MARK: - Tempo ramp (serialQueue only)
+
+    /// Advances the ramp after a full bar. Returns true once the goal tempo
+    /// has been played for its full number of bars.
+    private func rampBarCompleted() -> Bool {
+        rampBarsInStep += 1
+        guard rampBarsInStep >= rampBarsPerStep else { return false }
+        rampBarsInStep = 0
+
+        let ascending = rampGoalBpm >= rampCurrentBpm
+        let atGoal = ascending
+            ? rampCurrentBpm >= rampGoalBpm
+            : rampCurrentBpm <= rampGoalBpm
+        // Open-ended ramps just keep holding the limit tempo.
+        if atGoal || rampStepBpm <= 0 { return rampStopAtGoal }
+
+        var next = ascending
+            ? rampCurrentBpm + rampStepBpm
+            : rampCurrentBpm - rampStepBpm
+        next = ascending ? min(next, rampGoalBpm) : max(next, rampGoalBpm)
+        rampCurrentBpm = next
+        bpm = next
+        rampStepIndex += 1
+        onRampProgress?(RampProgress(stepIndex: rampStepIndex, bpm: next, finished: false))
+        return false
+    }
+
+    /// Stops scheduling; buffers already handed to the player still play
+    /// out (up to `lookaheadSeconds`), so the player node is stopped a
+    /// little later.
+    private func finishRamp() {
+        rampActive = false
+        isPlaying = false
+        timer?.cancel()
+        timer = nil
+        onRampProgress?(RampProgress(stepIndex: rampStepIndex, bpm: rampCurrentBpm, finished: true))
+        serialQueue.asyncAfter(deadline: .now() + lookaheadSeconds + 0.1) { [weak self] in
+            guard let self = self, !self.isPlaying else { return }
+            self.playerNode.stop()
         }
     }
 

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import 'background_config.dart';
 import 'subdivision.dart';
+import 'tempo_ramp.dart';
 import 'time_signature.dart';
 import 'voice.dart';
 
@@ -30,10 +31,17 @@ import 'voice.dart';
 /// ```
 class Metronome {
   static const MethodChannel _channel = MethodChannel('precise_metronome');
+  static const EventChannel _rampChannel =
+      EventChannel('precise_metronome/ramp');
 
   bool _initialized = false;
   bool _disposed = false;
   bool _isPlaying = false;
+
+  TempoRamp? _activeRamp;
+  StreamSubscription<dynamic>? _rampSubscription;
+  final StreamController<RampProgress> _rampController =
+      StreamController<RampProgress>.broadcast();
 
   double _bpm = 120.0;
   TimeSignature _timeSignature = TimeSignature(4, 4);
@@ -46,7 +54,22 @@ class Metronome {
   bool get isPlaying => _isPlaying;
 
   /// Current tempo in BPM (rate of the audible beat).
+  ///
+  /// While a [TempoRamp] is running this follows the ramp: it is updated
+  /// each time a [RampProgress] event arrives.
   double get tempo => _bpm;
+
+  /// The ramp started by [startRamp], or `null` when playing normally or
+  /// stopped.
+  TempoRamp? get activeRamp => _activeRamp;
+
+  /// Progress of the running [TempoRamp].
+  ///
+  /// Emits once at every tempo step (including the first, right after
+  /// [startRamp]) and once more with `finished == true` when the goal
+  /// tempo has been played out and the metronome stopped itself. Nothing
+  /// is emitted while playing without a ramp.
+  Stream<RampProgress> get rampProgress => _rampController.stream;
 
   /// Current time signature.
   TimeSignature get timeSignature => _timeSignature;
@@ -103,6 +126,55 @@ class Metronome {
     _isPlaying = true;
   }
 
+  /// Starts a progressive tempo ramp from bar position zero.
+  ///
+  /// The tempo is set to `ramp.startBpm`, held for `ramp.barsPerStep`
+  /// bars, then moved `ramp.stepBpm` towards `ramp.goalBpm` — exactly on
+  /// the bar line, sample-accurately, on the native side. When the goal
+  /// tempo has been played for its bars the metronome stops itself and
+  /// [isPlaying] becomes `false`. Listen to [rampProgress] to follow the
+  /// steps.
+  ///
+  /// An open-ended ramp (`ramp.goalBpm == null`) keeps stepping up until
+  /// [TempoRamp.maxBpm], holds there, and only ends with [stop].
+  ///
+  /// [initialDelay] behaves as in [start]. Calling [setTempo] while a
+  /// ramp runs only lasts until the next step; call [stop] to abort the
+  /// ramp early.
+  Future<void> startRamp(
+    TempoRamp ramp, {
+    Duration initialDelay = Duration.zero,
+  }) async {
+    _assertReady();
+    if (_isPlaying) return;
+    if (initialDelay.isNegative) {
+      throw ArgumentError.value(
+        initialDelay,
+        'initialDelay',
+        'must not be negative',
+      );
+    }
+    _activeRamp = ramp;
+    _bpm = ramp.startBpm;
+    _rampSubscription ??= _rampChannel.receiveBroadcastStream().listen(
+      _onRampEvent,
+      // Ramp events are informational; surface the error on the stream
+      // but keep the metronome usable.
+      onError: _rampController.addError,
+    );
+    await _channel.invokeMethod<void>('startRamp', {
+      'initialDelayMs': initialDelay.inMilliseconds,
+      ...ramp.toMap(),
+    });
+    _isPlaying = true;
+    _rampController.add(RampProgress(
+      stepIndex: 0,
+      totalSteps: ramp.isOpenEnded ? null : ramp.totalSteps,
+      bpm: ramp.startBpm,
+      finished: false,
+    ));
+  }
+
   /// Shifts the phase of all future clicks by [delta] while playing.
   ///
   /// Positive values move clicks later, negative values earlier. The bar
@@ -126,6 +198,7 @@ class Metronome {
     if (!_isPlaying) return;
     await _channel.invokeMethod<void>('stop');
     _isPlaying = false;
+    _activeRamp = null;
   }
 
   /// Sets the tempo in beats per minute.
@@ -262,9 +335,32 @@ class Metronome {
     }
     _initialized = false;
     _isPlaying = false;
+    _activeRamp = null;
+    await _rampSubscription?.cancel();
+    _rampSubscription = null;
+    await _rampController.close();
   }
 
   // ---- internals ----
+
+  void _onRampEvent(dynamic event) {
+    final ramp = _activeRamp;
+    if (ramp == null || event is! Map) return;
+    final stepIndex = (event['stepIndex'] as num?)?.toInt() ?? 0;
+    final finished = event['finished'] == true;
+    final bpm = (event['bpm'] as num?)?.toDouble() ?? ramp.bpmAt(stepIndex);
+    _bpm = bpm;
+    if (finished) {
+      _isPlaying = false;
+      _activeRamp = null;
+    }
+    _rampController.add(RampProgress(
+      stepIndex: stepIndex,
+      totalSteps: ramp.isOpenEnded ? null : ramp.totalSteps,
+      bpm: bpm,
+      finished: finished,
+    ));
+  }
 
   Future<void> _pushState() async {
     await _channel.invokeMethod<void>('setTempo', {'bpm': _bpm});

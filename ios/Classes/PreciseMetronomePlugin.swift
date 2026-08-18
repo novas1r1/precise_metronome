@@ -1,9 +1,10 @@
 import Flutter
 import UIKit
 
-public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
+public class PreciseMetronomePlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
     private var engine: MetronomeEngine?
+    private var rampSink: FlutterEventSink?
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(
@@ -12,6 +13,12 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
         )
         let instance = PreciseMetronomePlugin()
         registrar.addMethodCallDelegate(instance, channel: channel)
+
+        let rampChannel = FlutterEventChannel(
+            name: "precise_metronome/ramp",
+            binaryMessenger: registrar.messenger()
+        )
+        rampChannel.setStreamHandler(instance)
     }
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -20,6 +27,15 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
         case "init":
             do {
                 let e = MetronomeEngine()
+                e.onRampProgress = { [weak self] progress in
+                    DispatchQueue.main.async {
+                        self?.rampSink?([
+                            "stepIndex": progress.stepIndex,
+                            "bpm": progress.bpm,
+                            "finished": progress.finished,
+                        ])
+                    }
+                }
                 try e.initialize()
                 engine = e
                 result(nil)
@@ -35,6 +51,25 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
             let initialDelayMs = args?["initialDelayMs"] as? Int ?? 0
             requireEngine(result)?.start(
                 initialDelaySeconds: Double(initialDelayMs) / 1000.0)
+            result(nil)
+
+        case "startRamp":
+            guard let args = call.arguments as? [String: Any],
+                  let startBpm = args["startBpm"] as? Double,
+                  let goalBpm = args["goalBpm"] as? Double,
+                  let stopAtGoal = args["stopAtGoal"] as? Bool,
+                  let stepBpm = args["stepBpm"] as? Double,
+                  let barsPerStep = args["barsPerStep"] as? Int else {
+                result(argError("startBpm, goalBpm, stepBpm: Double, stopAtGoal: Bool, barsPerStep: Int")); return
+            }
+            let initialDelayMs = args["initialDelayMs"] as? Int ?? 0
+            requireEngine(result)?.startRamp(
+                initialDelaySeconds: Double(initialDelayMs) / 1000.0,
+                startBpm: startBpm,
+                goalBpm: goalBpm,
+                stopAtGoal: stopAtGoal,
+                stepBpm: stepBpm,
+                barsPerStep: barsPerStep)
             result(nil)
 
         case "nudge":
@@ -115,6 +150,19 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
         default:
             result(FlutterMethodNotImplemented)
         }
+    }
+
+    // MARK: - FlutterStreamHandler (ramp progress)
+
+    public func onListen(withArguments arguments: Any?,
+                         eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        rampSink = events
+        return nil
+    }
+
+    public func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        rampSink = nil
+        return nil
     }
 
     private func requireEngine(_ result: FlutterResult) -> MetronomeEngine? {

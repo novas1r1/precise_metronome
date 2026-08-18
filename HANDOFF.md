@@ -146,8 +146,10 @@ Ordered by likely priority:
 2. **Subdivisions** (8ths, 16ths, triplets, sextuplets). The engine's
    frame-position math already supports fractional beats; this is an
    API-layer addition, not an engine rewrite.
-3. **Tempo ramps / practice modes.** Progressive (increase X BPM every
-   N bars), random mute (silence N% of bars).
+3. **Practice modes.** Progressive tempo ramps shipped in 0.4.0
+   (`TempoRamp` / `startRamp`, native bar-line stepping, ramp events via
+   `precise_metronome/ramp` EventChannel). Still open: random mute
+   (silence N% of bars).
 4. **Four-level accents** (silent / soft / normal / loud) if real
    musical use cases emerge.
 5. **User-supplied WAV samples.** Requirements doc already drafted in

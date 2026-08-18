@@ -40,6 +40,33 @@ Java_com_repeatlab_precise_1metronome_NativeBridge_nativeStart(
 }
 
 JNIEXPORT void JNICALL
+Java_com_repeatlab_precise_1metronome_NativeBridge_nativeStartRamp(
+    JNIEnv* /*env*/, jclass /*clazz*/, jlong handle,
+    jlong initial_delay_ms, jdouble start_bpm, jdouble goal_bpm,
+    jboolean stop_at_goal, jdouble step_bpm, jint bars_per_step) {
+    if (handle == 0) return;
+    reinterpret_cast<MetronomeEngine*>(handle)->start_ramp(
+        initial_delay_ms, start_bpm, goal_bpm, stop_at_goal != 0, step_bpm,
+        bars_per_step);
+}
+
+// Returns [stepIndex, bpm, finished(0/1)] for the running ramp.
+JNIEXPORT jdoubleArray JNICALL
+Java_com_repeatlab_precise_1metronome_NativeBridge_nativeRampState(
+    JNIEnv* env, jclass /*clazz*/, jlong handle) {
+    jdoubleArray out = env->NewDoubleArray(3);
+    if (handle == 0 || out == nullptr) return out;
+    auto* engine = reinterpret_cast<MetronomeEngine*>(handle);
+    const jdouble values[3] = {
+        static_cast<jdouble>(engine->ramp_step_index()),
+        engine->ramp_bpm(),
+        engine->ramp_finished() ? 1.0 : 0.0,
+    };
+    env->SetDoubleArrayRegion(out, 0, 3, values);
+    return out;
+}
+
+JNIEXPORT void JNICALL
 Java_com_repeatlab_precise_1metronome_NativeBridge_nativeNudge(
     JNIEnv* /*env*/, jclass /*clazz*/, jlong handle, jlong delta_ms) {
     if (handle == 0) return;

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0 — Tempo ramps
+
+- Added `TempoRamp` and `Metronome.startRamp(ramp)`: the metronome starts
+  at `startBpm`, holds each tempo for `barsPerStep` bars, then moves
+  `stepBpm` towards `goalBpm` (the last step is clamped so the goal is hit
+  exactly; descending ramps are supported). After the goal tempo has been
+  played for its bars the metronome stops itself.
+- Tempo steps are applied by the native engines exactly on the bar line,
+  sample-accurately — no Dart timers involved.
+- Added `Metronome.rampProgress`, a `Stream<RampProgress>` that reports
+  each step (index, total, BPM) and the final `finished` event, plus
+  `Metronome.activeRamp`. Delivered over a new `precise_metronome/ramp`
+  event channel.
+- `goalBpm` is optional: without it the ramp is open-ended and keeps
+  stepping up until 400 BPM, holding there until `stop()`.
+- Example app gained a "Tempo ramp" section.
+
 ## 0.3.3 — Android: lower minSdk to 26
 
 - Android `minSdk` dropped from 28 to **26** (Android 8.0). Nothing in the

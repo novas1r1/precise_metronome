@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:precise_metronome/precise_metronome.dart';
 
@@ -41,6 +43,15 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
   double _volume = 0.8;
   bool _background = false;
 
+  // Tempo ramp ('speed trainer').
+  double _rampStart = 80;
+  double _rampGoal = 120;
+  bool _rampOpenEnded = false;
+  double _rampStep = 5;
+  int _rampBars = 4;
+  RampProgress? _rampProgress;
+  StreamSubscription<RampProgress>? _rampSub;
+
   static final List<TimeSignature> _presetSignatures = [
     TimeSignature(2, 4),
     TimeSignature(3, 4),
@@ -66,6 +77,14 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
       await _metronome.setAccentPattern(_accents);
       await _metronome.setVoice(_voice);
       await _metronome.setVolume(_volume);
+      _rampSub = _metronome.rampProgress.listen((p) {
+        if (!mounted) return;
+        setState(() {
+          _rampProgress = p;
+          _bpm = p.bpm;
+          if (p.finished) _playing = false;
+        });
+      });
       if (!mounted) return;
       setState(() => _ready = true);
     } catch (e) {
@@ -78,6 +97,7 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
 
   @override
   void dispose() {
+    _rampSub?.cancel();
     _metronome.dispose();
     super.dispose();
   }
@@ -89,7 +109,25 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
     } else {
       await _metronome.start();
     }
-    setState(() => _playing = !_playing);
+    setState(() {
+      _playing = !_playing;
+      _rampProgress = null;
+    });
+  }
+
+  Future<void> _startRamp() async {
+    if (!_ready || _playing) return;
+    final ramp = TempoRamp(
+      startBpm: _rampStart,
+      goalBpm: _rampOpenEnded ? null : _rampGoal,
+      stepBpm: _rampStep,
+      barsPerStep: _rampBars,
+    );
+    await _metronome.startRamp(ramp);
+    setState(() {
+      _playing = true;
+      _bpm = _rampStart;
+    });
   }
 
   Future<void> _onTempoChanged(double v) async {
@@ -236,6 +274,44 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
                 }),
               ),
               const SizedBox(height: 28),
+              _sectionLabel('Tempo ramp'),
+              _rampField('Start BPM', _rampStart, 20, 400,
+                  (v) => setState(() => _rampStart = v)),
+              SwitchListTile(
+                value: _rampOpenEnded,
+                onChanged: _ready && !_playing
+                    ? (v) => setState(() => _rampOpenEnded = v)
+                    : null,
+                title: const Text('Open-ended'),
+                subtitle: const Text('Keep speeding up until stopped'),
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+              ),
+              if (!_rampOpenEnded)
+              _rampField('Goal BPM', _rampGoal, 20, 400,
+                  (v) => setState(() => _rampGoal = v)),
+              _rampField('Step BPM', _rampStep, 1, 50,
+                  (v) => setState(() => _rampStep = v)),
+              _rampField('Bars per step', _rampBars.toDouble(), 1, 16,
+                  (v) => setState(() => _rampBars = v.round())),
+              const SizedBox(height: 8),
+              FilledButton.tonalIcon(
+                onPressed: _ready && !_playing ? _startRamp : null,
+                icon: const Icon(Icons.trending_up),
+                label: const Text('Start ramp'),
+              ),
+              if (_rampProgress case final p?)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    p.finished
+                        ? 'Ramp finished at ${p.bpm.round()} BPM'
+                        : 'Step ${p.stepIndex + 1}${p.totalSteps == null ? '' : '/${p.totalSteps}'}'
+                            '  ·  ${p.bpm.round()} BPM',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ),
+              const SizedBox(height: 28),
               _sectionLabel('Voice'),
               Wrap(
                 spacing: 8,
@@ -279,6 +355,31 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
           style: Theme.of(context).textTheme.labelLarge,
         ),
       );
+
+  Widget _rampField(
+    String label,
+    double value,
+    double min,
+    double max,
+    ValueChanged<double> onChanged,
+  ) {
+    return Row(
+      children: [
+        SizedBox(width: 110, child: Text(label)),
+        Expanded(
+          child: Slider(
+            min: min,
+            max: max,
+            divisions: (max - min).round(),
+            value: value.clamp(min, max),
+            label: '${value.round()}',
+            onChanged: _ready && !_playing ? onChanged : null,
+          ),
+        ),
+        SizedBox(width: 36, child: Text('${value.round()}')),
+      ],
+    );
+  }
 
   Widget _bpmDisplay(ColorScheme cs) {
     return Container(

@@ -97,6 +97,27 @@ void MetronomeEngine::rebuild_buffers(double sample_rate) {
 }
 
 void MetronomeEngine::start(int64_t initial_delay_ms) {
+    ramp_enabled_.store(false, std::memory_order_release);
+    begin_session(initial_delay_ms);
+}
+
+void MetronomeEngine::start_ramp(int64_t initial_delay_ms, double start_bpm,
+                                 double goal_bpm, bool stop_at_goal,
+                                 double step_bpm, int bars_per_step) {
+    bpm_.store(start_bpm, std::memory_order_relaxed);
+    ramp_goal_bpm_.store(goal_bpm, std::memory_order_relaxed);
+    ramp_stop_at_goal_.store(stop_at_goal, std::memory_order_relaxed);
+    ramp_step_bpm_.store(step_bpm, std::memory_order_relaxed);
+    ramp_bars_per_step_.store(std::max(bars_per_step, 1),
+                              std::memory_order_relaxed);
+    ramp_step_index_.store(0, std::memory_order_relaxed);
+    ramp_bpm_.store(start_bpm, std::memory_order_relaxed);
+    ramp_finished_.store(false, std::memory_order_relaxed);
+    ramp_enabled_.store(true, std::memory_order_release);
+    begin_session(initial_delay_ms);
+}
+
+void MetronomeEngine::begin_session(int64_t initial_delay_ms) {
     const int64_t delay_frames =
         std::max<int64_t>(initial_delay_ms, 0) * sample_rate_ / 1000;
     initial_delay_frames_.store(delay_frames, std::memory_order_release);
@@ -176,6 +197,35 @@ void MetronomeEngine::onErrorAfterClose(oboe::AudioStream* /*stream*/,
     }
 }
 
+// Called on the audio thread after the last pulse of a bar has been
+// scheduled. Advances the ramp; returns true once the goal tempo has been
+// played for its full number of bars and the ramp should stop the engine.
+bool MetronomeEngine::on_ramp_bar_completed() {
+    if (++ramp_bars_in_step_ <
+        ramp_bars_per_step_.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    ramp_bars_in_step_ = 0;
+
+    const double goal = ramp_goal_bpm_.load(std::memory_order_relaxed);
+    const double step = ramp_step_bpm_.load(std::memory_order_relaxed);
+    const bool ascending = goal >= ramp_current_bpm_;
+    const bool at_goal = ascending ? (ramp_current_bpm_ >= goal)
+                                   : (ramp_current_bpm_ <= goal);
+    if (at_goal || step <= 0.0) {
+        // Open-ended ramps just keep holding the limit tempo.
+        return ramp_stop_at_goal_.load(std::memory_order_relaxed);
+    }
+    double next = ascending ? ramp_current_bpm_ + step
+                            : ramp_current_bpm_ - step;
+    next = ascending ? std::min(next, goal) : std::max(next, goal);
+    ramp_current_bpm_ = next;
+    bpm_.store(next, std::memory_order_relaxed);
+    ramp_bpm_.store(next, std::memory_order_relaxed);
+    ramp_step_index_.fetch_add(1, std::memory_order_release);
+    return false;
+}
+
 oboe::DataCallbackResult MetronomeEngine::onAudioReady(
     oboe::AudioStream* /*stream*/,
     void* audio_data,
@@ -204,6 +254,9 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         active_clicks_.clear();
         // Nudges from a previous session must not leak into this one.
         pending_nudge_frames_.store(0, std::memory_order_release);
+        ramp_active_ = ramp_enabled_.load(std::memory_order_acquire);
+        ramp_bars_in_step_ = 0;
+        ramp_current_bpm_ = bpm_.load(std::memory_order_relaxed);
     }
 
     // Subdivision change: snap to a clean beat boundary at the next pulse.
@@ -334,6 +387,15 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
             if (pulse_index_in_beat_ >= ppb) {
                 pulse_index_in_beat_ = 0;
                 beat_index_in_bar_ = (beat_index_in_bar_ + 1) % bpb;
+                if (beat_index_in_bar_ == 0 && ramp_active_ &&
+                    on_ramp_bar_completed()) {
+                    // Goal tempo played out: stop scheduling. Clicks
+                    // already in active_clicks_ still ring out.
+                    playing_.store(false, std::memory_order_release);
+                    ramp_active_ = false;
+                    ramp_finished_.store(true, std::memory_order_release);
+                    break;
+                }
             }
 
             const double bpm = bpm_.load(std::memory_order_relaxed);

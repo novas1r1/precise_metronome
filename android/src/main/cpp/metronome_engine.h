@@ -21,6 +21,13 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     bool initialize();
     // First pulse fires `initial_delay_ms` later than it otherwise would.
     void start(int64_t initial_delay_ms = 0);
+    // Like start(), but steps the tempo from start_bpm towards goal_bpm by
+    // step_bpm every bars_per_step bars (last step clamped to goal_bpm). With
+    // stop_at_goal it stops itself after goal_bpm has been played for
+    // bars_per_step bars; otherwise it holds goal_bpm until stop().
+    void start_ramp(int64_t initial_delay_ms, double start_bpm,
+                    double goal_bpm, bool stop_at_goal, double step_bpm,
+                    int bars_per_step);
     void stop();
     void dispose();
 
@@ -36,6 +43,20 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     void set_voice(int voice_index);
     void set_volume(double volume);
 
+    // Ramp progress, readable from any thread. step_index is 0-based;
+    // finished becomes true once the engine has stopped itself. All three
+    // are updated together on the audio thread; a reader may observe them
+    // one field apart, which is harmless for progress display.
+    int ramp_step_index() const {
+        return ramp_step_index_.load(std::memory_order_acquire);
+    }
+    double ramp_bpm() const {
+        return ramp_bpm_.load(std::memory_order_acquire);
+    }
+    bool ramp_finished() const {
+        return ramp_finished_.load(std::memory_order_acquire);
+    }
+
     // oboe::AudioStreamDataCallback
     oboe::DataCallbackResult onAudioReady(
         oboe::AudioStream* stream,
@@ -50,6 +71,8 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     static constexpr int kMaxPattern = 32;
     static constexpr int kMaxActiveClicks = 16;
 
+    void begin_session(int64_t initial_delay_ms);
+    bool on_ramp_bar_completed();
     bool open_stream();
     void close_stream();
     void rebuild_buffers(double sample_rate);
@@ -74,6 +97,18 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     // snap to a clean beat boundary on its next pulse.
     std::atomic<bool> realign_pulse_requested_{false};
 
+    // Tempo ramp parameters (Flutter thread writes before start_ramp() sets
+    // reset_requested_; audio thread reads after seeing it).
+    std::atomic<bool> ramp_enabled_{false};
+    std::atomic<double> ramp_goal_bpm_{120.0};
+    std::atomic<bool> ramp_stop_at_goal_{true};
+    std::atomic<double> ramp_step_bpm_{0.0};
+    std::atomic<int> ramp_bars_per_step_{1};
+    // Ramp progress published by the audio thread.
+    std::atomic<int> ramp_step_index_{0};
+    std::atomic<double> ramp_bpm_{120.0};
+    std::atomic<bool> ramp_finished_{false};
+
     // Accent pattern: fixed-size array + atomic length.
     // Writes from Flutter thread are not strictly atomic per-element, but the
     // worst case is a briefly incorrect accent on a single beat during an
@@ -95,6 +130,10 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     int beat_index_in_bar_ = 0;
     int pulse_index_in_beat_ = 0;
     bool has_anchor_ = false;
+    // Ramp state, audio-thread-only.
+    bool ramp_active_ = false;
+    int ramp_bars_in_step_ = 0;
+    double ramp_current_bpm_ = 120.0;
 
     struct ActiveClick {
         const float* samples;
