@@ -42,4 +42,12 @@ internal object NativeBridge {
     @JvmStatic external fun nativeSetSubdivision(handle: Long, pulsesPerBeat: Int)
     @JvmStatic external fun nativeSetVoice(handle: Long, voiceIndex: Int)
     @JvmStatic external fun nativeSetVolume(handle: Long, volume: Double)
+
+    @JvmStatic external fun nativeSetBeatEvents(
+        handle: Long,
+        enabled: Boolean,
+        includeSubdivisions: Boolean
+    )
+    /** Pending beat events flattened as [bar, beat, pulse, accent, ...]. */
+    @JvmStatic external fun nativeDrainBeatEvents(handle: Long): IntArray
 }

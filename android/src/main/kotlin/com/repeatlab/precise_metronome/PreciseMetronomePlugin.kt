@@ -16,6 +16,7 @@ class PreciseMetronomePlugin :
 
     private lateinit var channel: MethodChannel
     private lateinit var rampChannel: EventChannel
+    private lateinit var beatChannel: EventChannel
     private lateinit var appContext: Context
 
     // Ramp progress is published by the audio thread through atomics; we
@@ -27,6 +28,22 @@ class PreciseMetronomePlugin :
     private var rampPolling = false
     private var lastRampStep = -1
     private var lastRampFinished = false
+    // Beat events: the audio thread writes each rendered pulse into a native
+    // ring buffer; while Dart listens and the engine plays we drain it from
+    // the main thread every BEAT_POLL_MS.
+    private var beatSink: EventChannel.EventSink? = null
+    private var beatEventsEnabled = false
+    private var beatIncludeSub = false
+    private var enginePlaying = false
+    private var playSession = 0
+    private var beatPolling = false
+    private val beatPoller = object : Runnable {
+        override fun run() {
+            if (!beatPolling) return
+            pollBeats()
+            if (beatPolling) mainHandler.postDelayed(this, BEAT_POLL_MS)
+        }
+    }
     private val rampPoller = object : Runnable {
         override fun run() {
             if (!rampPolling) return
@@ -51,6 +68,17 @@ class PreciseMetronomePlugin :
                 rampSink = null
             }
         })
+        beatChannel = EventChannel(binding.binaryMessenger, "precise_metronome/beats")
+        beatChannel.setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                beatSink = events
+                updateBeatPolling()
+            }
+            override fun onCancel(arguments: Any?) {
+                beatSink = null
+                updateBeatPolling()
+            }
+        })
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -58,6 +86,9 @@ class PreciseMetronomePlugin :
         rampChannel.setStreamHandler(null)
         rampSink = null
         stopRampPolling()
+        beatChannel.setStreamHandler(null)
+        beatSink = null
+        stopBeatPolling()
         teardownEngine()
         if (backgroundEnabled) {
             stopForegroundService()
@@ -88,6 +119,7 @@ class PreciseMetronomePlugin :
 
                 "start" -> {
                     stopRampPolling()
+                    setEnginePlaying(true)
                     val initialDelayMs =
                         call.argument<Number>("initialDelayMs")?.toLong() ?: 0L
                     requireHandle(result)?.let {
@@ -120,6 +152,7 @@ class PreciseMetronomePlugin :
                             stepBpm, barsPerStep
                         )
                         startRampPolling()
+                        setEnginePlaying(true)
                         result.success(null)
                     }
                 }
@@ -138,6 +171,7 @@ class PreciseMetronomePlugin :
 
                 "stop" -> {
                     stopRampPolling()
+                    setEnginePlaying(false)
                     requireHandle(result)?.let {
                         NativeBridge.nativeStop(it)
                         result.success(null)
@@ -229,6 +263,18 @@ class PreciseMetronomePlugin :
                     }
                 }
 
+                "setBeatEvents" -> {
+                    val enabled = call.argument<Boolean>("enabled") ?: false
+                    val includeSub = call.argument<Boolean>("includeSubdivisions") ?: false
+                    requireHandle(result)?.let {
+                        NativeBridge.nativeSetBeatEvents(it, enabled, includeSub)
+                        beatEventsEnabled = enabled
+                        beatIncludeSub = includeSub
+                        updateBeatPolling()
+                        result.success(null)
+                    }
+                }
+
                 "setVolume" -> {
                     val volume = call.argument<Double>("volume")
                     if (volume == null) {
@@ -313,11 +359,61 @@ class PreciseMetronomePlugin :
                 mapOf("stepIndex" to step, "bpm" to bpm, "finished" to finished)
             )
         }
-        if (finished) stopRampPolling()
+        if (finished) {
+            stopRampPolling()
+            // Let the last clicks drain before beat polling stops.
+            val session = playSession
+            mainHandler.postDelayed({
+                if (playSession == session) setEnginePlaying(false)
+            }, 250L)
+        }
+    }
+
+    private fun setEnginePlaying(playing: Boolean) {
+        if (playing) playSession++
+        enginePlaying = playing
+        updateBeatPolling()
+    }
+
+    private fun updateBeatPolling() {
+        val shouldPoll = beatSink != null && beatEventsEnabled && enginePlaying
+        if (shouldPoll && !beatPolling) {
+            beatPolling = true
+            mainHandler.postDelayed(beatPoller, BEAT_POLL_MS)
+        } else if (!shouldPoll && beatPolling) {
+            // Drain once more so nothing already rendered is lost.
+            pollBeats()
+            stopBeatPolling()
+        }
+    }
+
+    private fun stopBeatPolling() {
+        beatPolling = false
+        mainHandler.removeCallbacks(beatPoller)
+    }
+
+    private fun pollBeats() {
+        if (engineHandle == 0L) return
+        val sink = beatSink ?: return
+        val flat = NativeBridge.nativeDrainBeatEvents(engineHandle)
+        var i = 0
+        while (i + 3 < flat.size) {
+            sink.success(
+                mapOf(
+                    "bar" to flat[i],
+                    "beat" to flat[i + 1],
+                    "pulse" to flat[i + 2],
+                    "accent" to (flat[i + 3] != 0)
+                )
+            )
+            i += 4
+        }
     }
 
     private fun teardownEngine() {
         stopRampPolling()
+        setEnginePlaying(false)
+        stopBeatPolling()
         if (engineHandle != 0L) {
             NativeBridge.nativeStop(engineHandle)
             NativeBridge.nativeDestroy(engineHandle)
@@ -361,5 +457,6 @@ class PreciseMetronomePlugin :
 
     private companion object {
         const val RAMP_POLL_MS = 20L
+        const val BEAT_POLL_MS = 10L
     }
 }

@@ -1,10 +1,13 @@
 import Flutter
 import UIKit
 
-public class PreciseMetronomePlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
+public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
 
     private var engine: MetronomeEngine?
     private var rampSink: FlutterEventSink?
+    private var beatSink: FlutterEventSink?
+    private var rampStreamHandler: StreamSinkHandler?
+    private var beatStreamHandler: StreamSinkHandler?
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(
@@ -18,7 +21,17 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin, FlutterStreamHandl
             name: "precise_metronome/ramp",
             binaryMessenger: registrar.messenger()
         )
-        rampChannel.setStreamHandler(instance)
+        let rampHandler = StreamSinkHandler { [weak instance] sink in instance?.rampSink = sink }
+        instance.rampStreamHandler = rampHandler
+        rampChannel.setStreamHandler(rampHandler)
+
+        let beatChannel = FlutterEventChannel(
+            name: "precise_metronome/beats",
+            binaryMessenger: registrar.messenger()
+        )
+        let beatHandler = StreamSinkHandler { [weak instance] sink in instance?.beatSink = sink }
+        instance.beatStreamHandler = beatHandler
+        beatChannel.setStreamHandler(beatHandler)
     }
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -35,6 +48,15 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin, FlutterStreamHandl
                             "finished": progress.finished,
                         ])
                     }
+                }
+                e.onBeat = { [weak self] beat in
+                    // Already on the main queue.
+                    self?.beatSink?([
+                        "bar": beat.bar,
+                        "beat": beat.beat,
+                        "pulse": beat.pulse,
+                        "accent": beat.accent,
+                    ])
                 }
                 try e.initialize()
                 engine = e
@@ -126,6 +148,15 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin, FlutterStreamHandl
             requireEngine(result)?.setVoice(voice)
             result(nil)
 
+        case "setBeatEvents":
+            guard let args = call.arguments as? [String: Any],
+                  let enabled = args["enabled"] as? Bool else {
+                result(argError("enabled: Bool")); return
+            }
+            let includeSub = args["includeSubdivisions"] as? Bool ?? false
+            requireEngine(result)?.setBeatEvents(enabled: enabled, includeSubdivisions: includeSub)
+            result(nil)
+
         case "setVolume":
             guard let args = call.arguments as? [String: Any],
                   let volume = args["volume"] as? Double else {
@@ -152,19 +183,6 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin, FlutterStreamHandl
         }
     }
 
-    // MARK: - FlutterStreamHandler (ramp progress)
-
-    public func onListen(withArguments arguments: Any?,
-                         eventSink events: @escaping FlutterEventSink) -> FlutterError? {
-        rampSink = events
-        return nil
-    }
-
-    public func onCancel(withArguments arguments: Any?) -> FlutterError? {
-        rampSink = nil
-        return nil
-    }
-
     private func requireEngine(_ result: FlutterResult) -> MetronomeEngine? {
         if let e = engine { return e }
         result(FlutterError(code: "not_initialized",
@@ -177,5 +195,25 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin, FlutterStreamHandl
         FlutterError(code: "bad_arguments",
                      message: "Expected \(expected).",
                      details: nil)
+    }
+}
+
+/// Minimal FlutterStreamHandler that hands the sink (or nil) to a closure.
+final class StreamSinkHandler: NSObject, FlutterStreamHandler {
+    private let onSink: (FlutterEventSink?) -> Void
+
+    init(_ onSink: @escaping (FlutterEventSink?) -> Void) {
+        self.onSink = onSink
+    }
+
+    func onListen(withArguments arguments: Any?,
+                  eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        onSink(events)
+        return nil
+    }
+
+    func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        onSink(nil)
+        return nil
     }
 }

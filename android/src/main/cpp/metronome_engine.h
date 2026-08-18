@@ -3,6 +3,7 @@
 #include <oboe/Oboe.h>
 
 #include <array>
+#include <cstdint>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -42,6 +43,21 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     void set_subdivision(int pulses_per_beat);
     void set_voice(int voice_index);
     void set_volume(double volume);
+
+    // Beat events: when enabled, the audio thread records every rendered
+    // pulse (or only main beats) into a small lock-free ring buffer that
+    // the Flutter thread drains with drain_beat_events().
+    struct BeatEvent {
+        int32_t bar;
+        int32_t beat;
+        int32_t pulse;
+        int32_t accent;
+    };
+    void set_beat_events(bool enabled, bool include_subdivisions);
+    // Copies up to `max` pending events into `out`, oldest first, and
+    // returns how many were copied. If the reader fell more than the ring
+    // size behind, the oldest events are dropped. Flutter thread only.
+    int drain_beat_events(BeatEvent* out, int max);
 
     // Ramp progress, readable from any thread. step_index is 0-based;
     // finished becomes true once the engine has stopped itself. All three
@@ -109,6 +125,15 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     std::atomic<double> ramp_bpm_{120.0};
     std::atomic<bool> ramp_finished_{false};
 
+    // Beat event ring (single producer: audio thread; single consumer:
+    // Flutter thread).
+    static constexpr uint32_t kBeatRingSize = 64;
+    std::atomic<bool> beat_events_enabled_{false};
+    std::atomic<bool> beat_events_include_sub_{false};
+    std::array<BeatEvent, kBeatRingSize> beat_ring_{};
+    std::atomic<uint32_t> beat_write_count_{0};
+    uint32_t beat_read_count_ = 0;  // Flutter thread only
+
     // Accent pattern: fixed-size array + atomic length.
     // Writes from Flutter thread are not strictly atomic per-element, but the
     // worst case is a briefly incorrect accent on a single beat during an
@@ -128,6 +153,7 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     int64_t next_pulse_frame_ = 0;
     int64_t last_pulse_frame_ = 0;
     int beat_index_in_bar_ = 0;
+    int bar_index_ = 0;
     int pulse_index_in_beat_ = 0;
     bool has_anchor_ = false;
     // Ramp state, audio-thread-only.

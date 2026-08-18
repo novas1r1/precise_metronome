@@ -52,15 +52,20 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
   RampProgress? _rampProgress;
   StreamSubscription<RampProgress>? _rampSub;
 
+  // Beat indicator.
+  BeatEvent? _lastBeat;
+  bool _showBeatNumber = false;
+  StreamSubscription<BeatEvent>? _beatSub;
+
   static final List<TimeSignature> _presetSignatures = [
     TimeSignature(2, 4),
     TimeSignature(3, 4),
     TimeSignature(4, 4),
     TimeSignature(5, 4),
-    TimeSignature(6, 8),   // compound: 2 beats
+    TimeSignature(6, 8), // compound: 2 beats
     TimeSignature(7, 8),
-    TimeSignature(9, 8),   // compound: 3 beats
-    TimeSignature(12, 8),  // compound: 4 beats
+    TimeSignature(9, 8), // compound: 3 beats
+    TimeSignature(12, 8), // compound: 4 beats
   ];
 
   @override
@@ -85,6 +90,9 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
           if (p.finished) _playing = false;
         });
       });
+      _beatSub = _metronome.beats.listen((b) {
+        if (mounted) setState(() => _lastBeat = b);
+      });
       if (!mounted) return;
       setState(() => _ready = true);
     } catch (e) {
@@ -98,6 +106,7 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
   @override
   void dispose() {
     _rampSub?.cancel();
+    _beatSub?.cancel();
     _metronome.dispose();
     super.dispose();
   }
@@ -201,6 +210,21 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
             children: [
               _bpmDisplay(cs),
               const SizedBox(height: 12),
+              _beatIndicator(cs),
+              const SizedBox(height: 8),
+              Center(
+                child: SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('Dots')),
+                    ButtonSegment(value: true, label: Text('Number')),
+                  ],
+                  selected: {_showBeatNumber},
+                  onSelectionChanged: (s) =>
+                      setState(() => _showBeatNumber = s.first),
+                  showSelectedIcon: false,
+                ),
+              ),
+              const SizedBox(height: 12),
               Slider(
                 min: 20,
                 max: 400,
@@ -259,12 +283,10 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
                     height: 48,
                     child: FilledButton(
                       style: FilledButton.styleFrom(
-                        backgroundColor: accented
-                            ? cs.primary
-                            : cs.surfaceContainerHighest,
-                        foregroundColor: accented
-                            ? cs.onPrimary
-                            : cs.onSurfaceVariant,
+                        backgroundColor:
+                            accented ? cs.primary : cs.surfaceContainerHighest,
+                        foregroundColor:
+                            accented ? cs.onPrimary : cs.onSurfaceVariant,
                         padding: EdgeInsets.zero,
                       ),
                       onPressed: _ready ? () => _toggleAccent(i) : null,
@@ -288,8 +310,8 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
                 dense: true,
               ),
               if (!_rampOpenEnded)
-              _rampField('Goal BPM', _rampGoal, 20, 400,
-                  (v) => setState(() => _rampGoal = v)),
+                _rampField('Goal BPM', _rampGoal, 20, 400,
+                    (v) => setState(() => _rampGoal = v)),
               _rampField('Step BPM', _rampStep, 1, 50,
                   (v) => setState(() => _rampStep = v)),
               _rampField('Bars per step', _rampBars.toDouble(), 1, 16,
@@ -355,6 +377,54 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
           style: Theme.of(context).textTheme.labelLarge,
         ),
       );
+
+  Widget _beatIndicator(ColorScheme cs) {
+    final beat = _playing ? _lastBeat : null;
+    if (_showBeatNumber) return _beatNumber(cs, beat);
+    return _beatDots(cs, beat);
+  }
+
+  /// Just the current beat number, 1-based, e.g. 1 2 3 4 in 4/4.
+  Widget _beatNumber(ColorScheme cs, BeatEvent? beat) {
+    final accent = beat != null && beat.accent;
+    return SizedBox(
+      height: 72,
+      child: Center(
+        // No transition: any animation reads as extra lag behind the click.
+        child: Text(
+          beat == null ? '–' : '${beat.beatIndex + 1}',
+          style: Theme.of(context).textTheme.displayMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: beat == null
+                    ? cs.onSurfaceVariant
+                    : (accent ? cs.primary : cs.onSurface),
+              ),
+        ),
+      ),
+    );
+  }
+
+  /// One dot per beat; the current beat lights up as the click is heard.
+  Widget _beatDots(ColorScheme cs, BeatEvent? beat) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: List.generate(_sig.beatsPerBar, (i) {
+        final active = beat != null && beat.beatIndex == i;
+        final accent = _accents[i];
+        return Container(
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          width: active ? 22 : 16,
+          height: active ? 22 : 16,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: active
+                ? (accent ? cs.primary : cs.secondary)
+                : cs.surfaceContainerHighest,
+          ),
+        );
+      }),
+    );
+  }
 
   Widget _rampField(
     String label,

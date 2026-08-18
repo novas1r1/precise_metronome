@@ -9,6 +9,14 @@ struct RampProgress {
     let finished: Bool
 }
 
+/// One audible pulse, reported roughly when it becomes audible.
+struct BeatEvent {
+    let bar: Int
+    let beat: Int
+    let pulse: Int
+    let accent: Bool
+}
+
 /// Core audio engine. All audio scheduling happens on a dedicated serial
 /// queue; all state mutations coming in from Flutter are dispatched onto
 /// that queue so we never race the scheduler.
@@ -22,6 +30,10 @@ final class MetronomeEngine {
 
     /// Called on an arbitrary queue whenever ramp progress changes.
     var onRampProgress: ((RampProgress) -> Void)?
+
+    /// Called on the main queue for every rendered pulse (or main beat
+    /// only), delayed so it lines up with the moment the click is heard.
+    var onBeat: ((BeatEvent) -> Void)?
 
     // MARK: - Audio graph
     private let engine = AVAudioEngine()
@@ -58,6 +70,11 @@ final class MetronomeEngine {
     private var rampBarsInStep = 0
     private var rampStepIndex = 0
     private var rampCurrentBpm: Double = 120
+
+    // Beat events (serialQueue).
+    private var beatEventsEnabled = false
+    private var beatEventsIncludeSub = false
+    private var barIndex = 0
 
     // Scheduling constants.
     private let lookaheadSeconds: Double = 0.1   // schedule 100 ms ahead
@@ -136,6 +153,7 @@ final class MetronomeEngine {
         isPlaying = true
         beatIndexInBar = 0
         pulseIndexInBeat = 0
+        barIndex = 0
         hasAnchor = false
         initialDelayFrames =
             AVAudioFramePosition(max(0, initialDelaySeconds) * sampleRate)
@@ -226,6 +244,13 @@ final class MetronomeEngine {
             guard let voice = ClickVoice(rawValue: name) else { return }
             self.currentVoice = voice
             self.buffers = ClickSynth.render(voice: voice, sampleRate: self.sampleRate)
+        }
+    }
+
+    func setBeatEvents(enabled: Bool, includeSubdivisions: Bool) {
+        serialQueue.async { [weak self] in
+            self?.beatEventsEnabled = enabled
+            self?.beatEventsIncludeSub = includeSubdivisions
         }
     }
 
@@ -342,12 +367,13 @@ final class MetronomeEngine {
 
         while nextPulseSampleTime < horizon {
             let buffer: AVAudioPCMBuffer
+            var isAccent = false
             if pulseIndexInBeat == 0 {
                 // Main beat: pick accent or normal from the pattern.
-                let accent: Bool = beatIndexInBar < accentPattern.count
+                isAccent = beatIndexInBar < accentPattern.count
                     ? accentPattern[beatIndexInBar]
                     : (beatIndexInBar == 0)
-                buffer = accent ? buffers.accent : buffers.normal
+                buffer = isAccent ? buffers.accent : buffers.normal
             } else {
                 // Off-beat subdivision pulse: softer sub click.
                 buffer = buffers.sub
@@ -357,12 +383,27 @@ final class MetronomeEngine {
             playerNode.scheduleBuffer(buffer, at: when, options: [], completionHandler: nil)
             lastScheduledPulseTime = nextPulseSampleTime
 
+            if beatEventsEnabled, let onBeat = onBeat,
+               pulseIndexInBeat == 0 || beatEventsIncludeSub {
+                // The click is scheduled up to `lookaheadSeconds` ahead;
+                // hold the event back until it is actually audible.
+                let event = BeatEvent(bar: barIndex, beat: beatIndexInBar,
+                                      pulse: pulseIndexInBeat, accent: isAccent)
+                let secondsUntilAudible =
+                    Double(nextPulseSampleTime - currentSampleTime) / sampleRate
+                    + AVAudioSession.sharedInstance().outputLatency
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + max(0, secondsUntilAudible)
+                ) { onBeat(event) }
+            }
+
             // Advance pulse / beat counters.
             let ppb = max(pulsesPerBeat, 1)
             pulseIndexInBeat += 1
             if pulseIndexInBeat >= ppb {
                 pulseIndexInBeat = 0
                 beatIndexInBar = (beatIndexInBar + 1) % max(beatsPerBar, 1)
+                if beatIndexInBar == 0 { barIndex += 1 }
                 if beatIndexInBar == 0, rampActive, rampBarCompleted() {
                     finishRamp()
                     return

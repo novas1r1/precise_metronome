@@ -140,9 +140,10 @@ likely hit small, local issues. The most likely ones:
 
 Ordered by likely priority:
 
-1. **`beatStream` for UI sync.** Engine already knows when each click
-   fires; just need a native → Dart callback after each scheduled beat.
-   Expected UI latency 5–20 ms behind audio, imperceptible visually.
+1. **`beatStream` for UI sync.** Shipped in 0.4.0 as `Metronome.beats`
+   (`precise_metronome/beats` EventChannel; Android: lock-free ring buffer
+   drained from the main thread every 10 ms, iOS: main-queue dispatch
+   delayed by look-ahead + output latency).
 2. **Subdivisions** (8ths, 16ths, triplets, sextuplets). The engine's
    frame-position math already supports fractional beats; this is an
    API-layer addition, not an engine rewrite.

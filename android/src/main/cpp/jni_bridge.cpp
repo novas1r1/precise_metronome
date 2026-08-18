@@ -137,4 +137,37 @@ Java_com_repeatlab_precise_1metronome_NativeBridge_nativeSetVolume(
     reinterpret_cast<MetronomeEngine*>(handle)->set_volume(volume);
 }
 
+JNIEXPORT void JNICALL
+Java_com_repeatlab_precise_1metronome_NativeBridge_nativeSetBeatEvents(
+    JNIEnv* /*env*/, jclass /*clazz*/, jlong handle,
+    jboolean enabled, jboolean include_subdivisions) {
+    if (handle == 0) return;
+    reinterpret_cast<MetronomeEngine*>(handle)->set_beat_events(
+        enabled != 0, include_subdivisions != 0);
+}
+
+// Returns pending beat events flattened as [bar, beat, pulse, accent, ...].
+JNIEXPORT jintArray JNICALL
+Java_com_repeatlab_precise_1metronome_NativeBridge_nativeDrainBeatEvents(
+    JNIEnv* env, jclass /*clazz*/, jlong handle) {
+    constexpr int kMax = 64;
+    MetronomeEngine::BeatEvent events[kMax];
+    int n = 0;
+    if (handle != 0) {
+        n = reinterpret_cast<MetronomeEngine*>(handle)->drain_beat_events(
+            events, kMax);
+    }
+    jintArray out = env->NewIntArray(n * 4);
+    if (out == nullptr || n == 0) return out;
+    jint flat[kMax * 4];
+    for (int i = 0; i < n; ++i) {
+        flat[i * 4 + 0] = events[i].bar;
+        flat[i * 4 + 1] = events[i].beat;
+        flat[i * 4 + 2] = events[i].pulse;
+        flat[i * 4 + 3] = events[i].accent;
+    }
+    env->SetIntArrayRegion(out, 0, n * 4, flat);
+    return out;
+}
+
 }  // extern "C"

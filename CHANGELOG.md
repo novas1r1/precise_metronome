@@ -1,7 +1,15 @@
 # Changelog
 
-## 0.4.0 — Tempo ramps
+## 0.4.0 — Tempo ramps and beat events
 
+- Added `Metronome.beats`, a `Stream<BeatEvent>` (bar, beat, pulse index,
+  accent) delivered close to the moment each click is heard, for beat
+  indicators and bar counters. Native emission is switched on only while
+  the stream has listeners. `setBeatEventOptions(includeSubdivisions:)`
+  also delivers subdivision pulses. New `precise_metronome/beats` event
+  channel; on Android the audio thread writes into a lock-free ring buffer
+  drained from the main thread, on iOS events are dispatched with the
+  scheduling look-ahead compensated.
 - Added `TempoRamp` and `Metronome.startRamp(ramp)`: the metronome starts
   at `startBpm`, holds each tempo for `barsPerStep` bars, then moves
   `stepBpm` towards `goalBpm` (the last step is clamped so the goal is hit

@@ -22,6 +22,7 @@ once at init. No per-beat allocations on the audio thread.
 - Two procedural click voices (no bundled audio assets)
 - Tempo range 20–400 BPM
 - Tap tempo
+- Beat events (`Metronome.beats`) for UI sync — beat indicators, bar counters — with optional subdivision pulses
 - Tempo ramps ("speed trainer"): step from a start to a goal BPM every N bars, exactly on the bar line
 - Optional background playback (iOS audio session + Android foreground service)
 - Mixes with other audio by default — practice over backing tracks
@@ -73,6 +74,29 @@ final tap = TapTempo();
 final bpm = tap.tap();
 if (bpm != null) await metronome.setTempo(bpm);
 ```
+
+### Beat events (UI sync)
+
+`Metronome.beats` delivers a `BeatEvent` for every main beat (bar, beat,
+pulse index, accent), timed to arrive as close as possible to the moment
+the click is heard — typically 2–10 ms behind the audio on iOS and
+10–25 ms on Android, below what the eye can notice. Native emission is
+only active while the stream has listeners.
+
+```dart
+final sub = metronome.beats.listen((b) {
+  setState(() => currentBeat = b.beatIndex);   // light up beat b.beatIndex
+  if (b.isDownbeat) barCounter = b.barIndex + 1;
+});
+
+// Also receive subdivision pulses (pulseIndex > 0):
+await metronome.setBeatEventOptions(includeSubdivisions: true);
+```
+
+The events are for feedback, not for driving audio — clicks are
+scheduled natively and never wait for Dart. For animations that need to
+land exactly *on* the beat (a pendulum, say), interpolate locally from
+`tempo` and use the events to re-sync.
 
 ### Tempo ramp (speed trainer)
 
@@ -188,7 +212,6 @@ kotlinOptions {
 
 Not yet included, easy to add later:
 
-- `beatStream` for UI sync.
 - Practice modes beyond tempo ramps (random-mute, silent bars).
 - User-supplied WAV samples.
 - Web, macOS, Windows, Linux.

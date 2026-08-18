@@ -178,6 +178,31 @@ void MetronomeEngine::set_volume(double volume) {
     volume_.store(std::clamp(volume, 0.0, 1.0), std::memory_order_relaxed);
 }
 
+void MetronomeEngine::set_beat_events(bool enabled, bool include_subdivisions) {
+    beat_events_include_sub_.store(include_subdivisions,
+                                   std::memory_order_relaxed);
+    if (enabled && !beat_events_enabled_.load(std::memory_order_acquire)) {
+        // Fresh start: skip anything still sitting in the ring.
+        beat_read_count_ = beat_write_count_.load(std::memory_order_acquire);
+    }
+    beat_events_enabled_.store(enabled, std::memory_order_release);
+}
+
+int MetronomeEngine::drain_beat_events(BeatEvent* out, int max) {
+    const uint32_t write = beat_write_count_.load(std::memory_order_acquire);
+    uint32_t read = beat_read_count_;
+    if (write - read > kBeatRingSize) {
+        read = write - kBeatRingSize;  // reader lapped: drop oldest
+    }
+    int n = 0;
+    while (read != write && n < max) {
+        out[n++] = beat_ring_[read % kBeatRingSize];
+        ++read;
+    }
+    beat_read_count_ = read;
+    return n;
+}
+
 void MetronomeEngine::onErrorAfterClose(oboe::AudioStream* /*stream*/,
                                         oboe::Result result) {
     LOGE("Audio stream error after close: %s", oboe::convertToText(result));
@@ -251,6 +276,7 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         has_anchor_ = false;
         beat_index_in_bar_ = 0;
         pulse_index_in_beat_ = 0;
+        bar_index_ = 0;
         active_clicks_.clear();
         // Nudges from a previous session must not leak into this one.
         pending_nudge_frames_.store(0, std::memory_order_release);
@@ -358,6 +384,18 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
                     src_ptr = &sub_buf;
                 }
 
+                if (beat_events_enabled_.load(std::memory_order_relaxed) &&
+                    (pulse_index_in_beat_ == 0 ||
+                     beat_events_include_sub_.load(
+                         std::memory_order_relaxed))) {
+                    const uint32_t w =
+                        beat_write_count_.load(std::memory_order_relaxed);
+                    beat_ring_[w % kBeatRingSize] = {
+                        bar_index_, beat_index_in_bar_, pulse_index_in_beat_,
+                        (src_ptr == &accent_buf) ? 1 : 0};
+                    beat_write_count_.store(w + 1, std::memory_order_release);
+                }
+
                 const auto& src = *src_ptr;
                 const int src_len = static_cast<int>(src.size());
                 if (src_len > 0) {
@@ -387,6 +425,7 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
             if (pulse_index_in_beat_ >= ppb) {
                 pulse_index_in_beat_ = 0;
                 beat_index_in_bar_ = (beat_index_in_bar_ + 1) % bpb;
+                if (beat_index_in_bar_ == 0) ++bar_index_;
                 if (beat_index_in_bar_ == 0 && ramp_active_ &&
                     on_ramp_bar_completed()) {
                     // Goal tempo played out: stop scheduling. Clicks

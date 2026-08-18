@@ -6,6 +6,7 @@
 library;
 
 export 'src/background_config.dart';
+export 'src/beat_event.dart';
 export 'src/tempo_ramp.dart';
 export 'src/metronome.dart';
 export 'src/subdivision.dart';

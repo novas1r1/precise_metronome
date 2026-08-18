@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 
 import 'background_config.dart';
+import 'beat_event.dart';
 import 'subdivision.dart';
 import 'tempo_ramp.dart';
 import 'time_signature.dart';
@@ -43,6 +44,16 @@ class Metronome {
   final StreamController<RampProgress> _rampController =
       StreamController<RampProgress>.broadcast();
 
+  static const EventChannel _beatChannel =
+      EventChannel('precise_metronome/beats');
+  StreamSubscription<dynamic>? _beatSubscription;
+  late final StreamController<BeatEvent> _beatController =
+      StreamController<BeatEvent>.broadcast(
+    onListen: _enableBeatEvents,
+    onCancel: _disableBeatEvents,
+  );
+  bool _includeSubdivisions = false;
+
   double _bpm = 120.0;
   TimeSignature _timeSignature = TimeSignature(4, 4);
   List<bool> _accentPattern = const [true, false, false, false];
@@ -70,6 +81,33 @@ class Metronome {
   /// tempo has been played out and the metronome stopped itself. Nothing
   /// is emitted while playing without a ramp.
   Stream<RampProgress> get rampProgress => _rampController.stream;
+
+  /// Every audible pulse, delivered as close as the platform allows to the
+  /// moment it is heard (typically 2–10 ms behind the audio on iOS, 10–25 ms
+  /// on Android — well below what the eye can notice).
+  ///
+  /// Native emission is switched on while this stream has listeners and
+  /// off again when the last one cancels, so an idle app pays nothing.
+  /// By default only main beats are sent; see [setBeatEventOptions] to
+  /// include subdivision pulses.
+  ///
+  /// The events are meant for UI feedback (beat indicators, bar counters),
+  /// not for driving audio — clicks are scheduled natively and never wait
+  /// for Dart.
+  Stream<BeatEvent> get beats => _beatController.stream;
+
+  /// Whether [beats] also delivers subdivision pulses (`pulseIndex > 0`).
+  bool get includeSubdivisionsInBeats => _includeSubdivisions;
+
+  /// Configures which pulses [beats] delivers. With
+  /// [includeSubdivisions] `false` (the default) only main beats are sent.
+  Future<void> setBeatEventOptions({required bool includeSubdivisions}) async {
+    _assertReady();
+    _includeSubdivisions = includeSubdivisions;
+    if (_beatController.hasListener) {
+      await _pushBeatEventOptions();
+    }
+  }
 
   /// Current time signature.
   TimeSignature get timeSignature => _timeSignature;
@@ -101,6 +139,8 @@ class Metronome {
     // Push initial state so native matches Dart defaults even before the
     // user sets anything.
     await _pushState();
+    // A listener may have subscribed to `beats` before init().
+    if (_beatController.hasListener) await _enableBeatEvents();
   }
 
   /// Starts the metronome from bar position zero.
@@ -339,9 +379,48 @@ class Metronome {
     await _rampSubscription?.cancel();
     _rampSubscription = null;
     await _rampController.close();
+    await _beatSubscription?.cancel();
+    _beatSubscription = null;
+    await _beatController.close();
   }
 
   // ---- internals ----
+
+  Future<void> _enableBeatEvents() async {
+    if (_disposed || !_initialized) return;
+    _beatSubscription ??= _beatChannel.receiveBroadcastStream().listen(
+      _onBeatEvent,
+      onError: _beatController.addError,
+    );
+    await _pushBeatEventOptions();
+  }
+
+  Future<void> _disableBeatEvents() async {
+    await _beatSubscription?.cancel();
+    _beatSubscription = null;
+    if (_disposed || !_initialized) return;
+    await _channel.invokeMethod<void>('setBeatEvents', {
+      'enabled': false,
+      'includeSubdivisions': _includeSubdivisions,
+    });
+  }
+
+  Future<void> _pushBeatEventOptions() {
+    return _channel.invokeMethod<void>('setBeatEvents', {
+      'enabled': true,
+      'includeSubdivisions': _includeSubdivisions,
+    });
+  }
+
+  void _onBeatEvent(dynamic event) {
+    if (event is! Map) return;
+    _beatController.add(BeatEvent(
+      barIndex: (event['bar'] as num?)?.toInt() ?? 0,
+      beatIndex: (event['beat'] as num?)?.toInt() ?? 0,
+      pulseIndex: (event['pulse'] as num?)?.toInt() ?? 0,
+      accent: event['accent'] == true,
+    ));
+  }
 
   void _onRampEvent(dynamic event) {
     final ramp = _activeRamp;
