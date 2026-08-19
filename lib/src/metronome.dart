@@ -175,6 +175,10 @@ class Metronome {
   /// [isPlaying] becomes `false`. Listen to [rampProgress] to follow the
   /// steps.
   ///
+  /// With `ramp.holdAtGoal` the metronome keeps clicking at the goal tempo
+  /// instead of stopping; [activeRamp] stays set and the last
+  /// [RampProgress] is the goal step (`isLastStep`). End it with [stop].
+  ///
   /// An open-ended ramp (`ramp.goalBpm == null`) keeps stepping up until
   /// [TempoRamp.maxBpm], holds there, and only ends with [stop].
   ///

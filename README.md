@@ -123,6 +123,18 @@ await metronome.startRamp(ramp);
 // ... call metronome.stop() to abort early.
 ```
 
+Pass `holdAtGoal: true` to keep clicking at the goal tempo instead of
+stopping — handy when the musician has just reached target tempo and wants
+to keep playing. `RampProgress.isLastStep` tells you the goal step is on;
+no `finished` event follows, end it with `stop()`.
+
+```dart
+await metronome.startRamp(TempoRamp(
+  startBpm: 80, goalBpm: 120, stepBpm: 5, barsPerStep: 4,
+  holdAtGoal: true,
+));
+```
+
 `ramp.steps` gives you the full list of tempi up front, e.g. for a
 progress bar. `goalBpm` below `startBpm` ramps downwards.
 

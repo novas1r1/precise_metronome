@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 — Hold at goal
+
+- Added `TempoRamp.holdAtGoal`: the metronome keeps clicking at `goalBpm`
+  after the ramp is done instead of stopping itself. `activeRamp` stays set
+  and no `finished` event is sent; end the ramp with `stop()`. Both native
+  engines already supported this — it is the existing `stopAtGoal` flag
+  exposed in the Dart API.
+- Added `TempoRamp.stopsAtGoal` and `RampProgress.isLastStep`.
+
 ## 0.4.0 — Tempo ramps and beat events
 
 - Added `Metronome.beats`, a `Stream<BeatEvent>` (bar, beat, pulse index,

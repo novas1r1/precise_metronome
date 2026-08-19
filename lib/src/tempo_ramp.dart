@@ -11,6 +11,12 @@ import 'dart:math' as math;
 ///
 /// [goalBpm] may be lower than [startBpm]; the ramp then descends.
 ///
+/// With [holdAtGoal] the metronome does not stop once the goal has been
+/// played out: it keeps clicking at [goalBpm] until `Metronome.stop()`, so a
+/// musician who just reached target tempo can keep playing. The last
+/// `RampProgress` is then the one for the goal step
+/// (`RampProgress.isLastStep`); no `finished` event follows.
+///
 /// If [goalBpm] is `null` the ramp is open-ended: the tempo keeps rising by
 /// [stepBpm] every [barsPerStep] bars until it reaches [maxBpm] (400), where
 /// it stays until the user calls `Metronome.stop()`. The metronome never
@@ -32,11 +38,16 @@ class TempoRamp {
   /// How many bars each step is held before advancing. Must be >= 1.
   final int barsPerStep;
 
+  /// Keep clicking at [goalBpm] after the ramp is done instead of stopping.
+  /// Has no effect on open-ended ramps, which never stop by themselves.
+  final bool holdAtGoal;
+
   TempoRamp({
     required this.startBpm,
     this.goalBpm,
     required this.stepBpm,
     required this.barsPerStep,
+    this.holdAtGoal = false,
   }) {
     _checkBpm(startBpm, 'startBpm');
     if (goalBpm != null) _checkBpm(goalBpm!, 'goalBpm');
@@ -56,6 +67,10 @@ class TempoRamp {
 
   /// `true` when the ramp has no [goalBpm] and runs until stopped.
   bool get isOpenEnded => goalBpm == null;
+
+  /// `true` when the metronome stops itself after the goal has been played
+  /// out: a ramp with a goal and without [holdAtGoal].
+  bool get stopsAtGoal => !isOpenEnded && !holdAtGoal;
 
   /// The tempo the ramp levels off at: [goalBpm], or [maxBpm] when
   /// open-ended.
@@ -93,7 +108,7 @@ class TempoRamp {
   Map<String, Object> toMap() => {
     'startBpm': startBpm,
     'goalBpm': _limitBpm,
-    'stopAtGoal': !isOpenEnded,
+    'stopAtGoal': stopsAtGoal,
     'stepBpm': stepBpm,
     'barsPerStep': barsPerStep,
   };
@@ -101,7 +116,7 @@ class TempoRamp {
   @override
   String toString() =>
       'TempoRamp($startBpm → ${goalBpm ?? '∞'}, step $stepBpm, '
-      '$barsPerStep bars/step)';
+      '$barsPerStep bars/step${holdAtGoal ? ', hold at goal' : ''})';
 }
 
 /// Snapshot of a running [TempoRamp], delivered through
@@ -121,7 +136,7 @@ class RampProgress {
 
   /// `true` once the goal tempo has been played for its full number of
   /// bars and the metronome has stopped itself. Never `true` for
-  /// open-ended ramps.
+  /// open-ended ramps or ramps with `TempoRamp.holdAtGoal`.
   final bool finished;
 
   const RampProgress({
@@ -130,6 +145,12 @@ class RampProgress {
     required this.bpm,
     required this.finished,
   });
+
+  /// `true` while the goal step is playing (`stepIndex` is the last of
+  /// [totalSteps]). For a ramp with `TempoRamp.holdAtGoal` this is the
+  /// terminal state — no `finished` event follows. Always `false` for
+  /// open-ended ramps.
+  bool get isLastStep => totalSteps != null && stepIndex + 1 == totalSteps;
 
   @override
   String toString() =>

@@ -58,6 +58,35 @@ void main() {
       expect(ramp.toMap()['goalBpm'], 400.0);
     });
 
+    test('holdAtGoal keeps the metronome running at the goal', () {
+      final ramp = TempoRamp(
+        startBpm: 80,
+        goalBpm: 120,
+        stepBpm: 15,
+        barsPerStep: 4,
+        holdAtGoal: true,
+      );
+      expect(ramp.isOpenEnded, isFalse);
+      expect(ramp.stopsAtGoal, isFalse);
+      expect(ramp.totalSteps, 4);
+      expect(ramp.toMap()['stopAtGoal'], isFalse);
+      expect(ramp.toMap()['goalBpm'], 120.0);
+      expect(ramp.toString(), contains('hold at goal'));
+
+      final plain = TempoRamp(startBpm: 80, goalBpm: 120, stepBpm: 15, barsPerStep: 4);
+      expect(plain.stopsAtGoal, isTrue);
+      expect(plain.toMap()['stopAtGoal'], isTrue);
+    });
+
+    test('RampProgress.isLastStep marks the goal step', () {
+      const mid = RampProgress(stepIndex: 1, totalSteps: 4, bpm: 95, finished: false);
+      const goal = RampProgress(stepIndex: 3, totalSteps: 4, bpm: 120, finished: false);
+      const open = RampProgress(stepIndex: 3, totalSteps: null, bpm: 120, finished: false);
+      expect(mid.isLastStep, isFalse);
+      expect(goal.isLastStep, isTrue);
+      expect(open.isLastStep, isFalse);
+    });
+
     test('validates arguments', () {
       expect(
         () => TempoRamp(startBpm: 10, goalBpm: 120, stepBpm: 5, barsPerStep: 1),
@@ -172,6 +201,42 @@ void main() {
       expect(progress.map((p) => p.stepIndex), [0, 1, 3]);
       expect(progress.last.finished, isTrue);
       expect(progress.last.totalSteps, 4);
+    });
+
+    test('holdAtGoal ramp reaches the goal step and keeps playing', () async {
+      late MockStreamHandlerEventSink sink;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(
+            rampChannel,
+            MockStreamHandler.inline(onListen: (_, events) => sink = events),
+          );
+      final m = Metronome();
+      await m.init();
+
+      final hold = TempoRamp(
+        startBpm: 80,
+        goalBpm: 120,
+        stepBpm: 15,
+        barsPerStep: 4,
+        holdAtGoal: true,
+      );
+      final progress = <RampProgress>[];
+      m.rampProgress.listen(progress.add);
+      await m.startRamp(hold);
+      await Future<void>.delayed(Duration.zero);
+
+      final call = calls.firstWhere((c) => c.method == 'startRamp');
+      expect((call.arguments as Map)['stopAtGoal'], isFalse);
+
+      // The native side reports the goal step like any other step and never
+      // sends `finished`.
+      sink.success({'stepIndex': 3, 'bpm': 120.0, 'finished': false});
+      await Future<void>.delayed(Duration.zero);
+      expect(m.tempo, 120.0);
+      expect(m.isPlaying, isTrue);
+      expect(m.activeRamp, hold);
+      expect(progress.last.isLastStep, isTrue);
+      expect(progress.last.finished, isFalse);
     });
 
     test('open-ended ramp reports null totalSteps', () async {
