@@ -17,7 +17,7 @@ once at init. No per-beat allocations on the audio thread.
 
 - Sample-accurate scheduling via a 25 ms look-ahead loop
 - Time signatures with smart compound-meter defaults (6/8 → 2 beats, 9/8 → 3, 12/8 → 4)
-- Arbitrary accent patterns
+- Arbitrary accent patterns, or simply: accent off (even clicks) / accent on any beat of the bar
 - Subdivisions (duple / triplet / quadruple) with softer sub-clicks between main beats
 - Two procedural click voices (no bundled audio assets)
 - Tempo range 20–400 BPM
@@ -45,6 +45,10 @@ await metronome.init();
 await metronome.setTempo(120);
 await metronome.setTimeSignature(TimeSignature(7, 8));
 await metronome.setAccentPattern([true, false, false, true, false, true, false]);
+
+// Or use the simple accent settings instead of a full pattern:
+await metronome.setAccentEnabled(false); // no accent — every beat sounds the same
+await metronome.setAccentBeat(2);        // single accent on beat 3 (0-based, re-enables)
 await metronome.setSubdivision(Subdivision.duple);   // eighth-note subdivisions
 await metronome.setVoice(MetronomeVoice.tone);
 await metronome.setVolume(0.8);

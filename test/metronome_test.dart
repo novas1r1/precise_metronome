@@ -135,6 +135,110 @@ void main() {
     expect(pattern.sublist(1), everyElement(false));
   });
 
+  test('setAccentEnabled(false) sends an all-false pattern', () async {
+    final m = Metronome();
+    await m.init();
+    calls.clear();
+
+    await m.setAccentEnabled(false);
+
+    expect(m.accentEnabled, false);
+    final call = calls.firstWhere((c) => c.method == 'setAccentPattern');
+    final pattern = ((call.arguments as Map)['accentPattern'] as List)
+        .cast<bool>();
+    expect(pattern, everyElement(false));
+    expect(pattern.length, 4);
+  });
+
+  test('setAccentEnabled(true) restores the accent on its previous beat',
+      () async {
+    final m = Metronome();
+    await m.init();
+    await m.setAccentBeat(2);
+    await m.setAccentEnabled(false);
+    calls.clear();
+
+    await m.setAccentEnabled(true);
+
+    expect(m.accentEnabled, true);
+    expect(m.accentBeat, 2);
+    expect(m.accentPattern, [false, false, true, false]);
+  });
+
+  test('setAccentBeat moves the single accent', () async {
+    final m = Metronome();
+    await m.init();
+    calls.clear();
+
+    await m.setAccentBeat(3);
+
+    expect(m.accentBeat, 3);
+    final call = calls.firstWhere((c) => c.method == 'setAccentPattern');
+    expect(
+      ((call.arguments as Map)['accentPattern'] as List).cast<bool>(),
+      [false, false, false, true],
+    );
+  });
+
+  test('setAccentBeat re-enables a disabled accent', () async {
+    final m = Metronome();
+    await m.init();
+    await m.setAccentEnabled(false);
+
+    await m.setAccentBeat(1);
+
+    expect(m.accentEnabled, true);
+    expect(m.accentPattern, [false, true, false, false]);
+  });
+
+  test('setAccentBeat validates against beatsPerBar', () async {
+    final m = Metronome();
+    await m.init();
+    await m.setTimeSignature(TimeSignature(3, 4));
+
+    expect(() => m.setAccentBeat(-1), throwsArgumentError);
+    expect(() => m.setAccentBeat(3), throwsArgumentError);
+    await expectLater(m.setAccentBeat(2), completes);
+  });
+
+  test('setTimeSignature keeps accent disabled and keeps a valid beat',
+      () async {
+    final m = Metronome();
+    await m.init();
+    await m.setAccentEnabled(false);
+    await m.setTimeSignature(TimeSignature(3, 4));
+    expect(m.accentEnabled, false);
+    expect(m.accentPattern, everyElement(false));
+
+    await m.setAccentBeat(2);
+    await m.setTimeSignature(TimeSignature(4, 4));
+    // Beat 2 still exists in 4/4 — the accent stays there.
+    expect(m.accentPattern, [false, false, true, false]);
+
+    await m.setAccentBeat(3);
+    await m.setTimeSignature(TimeSignature(3, 4));
+    // Beat 3 does not exist in 3/4 — falls back to beat 0.
+    expect(m.accentBeat, 0);
+    expect(m.accentPattern, [true, false, false]);
+  });
+
+  test('setAccentPattern syncs accentEnabled and accentBeat', () async {
+    final m = Metronome();
+    await m.init();
+
+    await m.setAccentPattern([false, false, false, false]);
+    expect(m.accentEnabled, false);
+
+    await m.setAccentPattern([false, true, false, false]);
+    expect(m.accentEnabled, true);
+    expect(m.accentBeat, 1);
+
+    // Multi-accent pattern: enabled, accentBeat keeps its last value.
+    await m.setAccentPattern([true, false, true, false]);
+    expect(m.accentEnabled, true);
+    expect(m.accentBeat, 1);
+  });
+
   test('setAccentPattern rejects wrong length', () async {
     final m = Metronome();
     await m.init();

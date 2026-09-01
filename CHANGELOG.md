@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 — Accent settings
+
+- Added `Metronome.setAccentEnabled(bool)`: with `false` every beat uses
+  the normal click, so the bar sounds completely even; `true` restores
+  the accent on the beat it was on before.
+- Added `Metronome.setAccentBeat(int)`: puts the single accent on any
+  beat of the bar (0-based, validated against `beatsPerBar` — 4 positions
+  in 4/4, 3 in 3/4, …) and re-enables a disabled accent.
+- Added the `accentEnabled` and `accentBeat` getters. Both stay in sync
+  with `setAccentPattern` (all-`false` disables, a single-accent pattern
+  moves `accentBeat`).
+- `setTimeSignature` now preserves the accent-enabled state and keeps the
+  accent on its beat when that beat still exists in the new bar (falling
+  back to beat 1 otherwise). Previously it always reset to an accent on
+  beat 1. Custom multi-accent patterns are still reset.
+- Example app: new "Accent" switch in the Accents section.
+- No native changes — both engines already play any accent pattern.
+
 ## 0.4.1 — Hold at goal
 
 - Added `TempoRamp.holdAtGoal`: the metronome keeps clicking at `goalBpm`

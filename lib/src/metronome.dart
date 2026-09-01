@@ -57,6 +57,8 @@ class Metronome {
   double _bpm = 120.0;
   TimeSignature _timeSignature = TimeSignature(4, 4);
   List<bool> _accentPattern = const [true, false, false, false];
+  bool _accentEnabled = true;
+  int _accentBeat = 0;
   Subdivision _subdivision = Subdivision.none;
   MetronomeVoice _voice = MetronomeVoice.tone;
   double _volume = 0.8;
@@ -114,6 +116,20 @@ class Metronome {
 
   /// Current accent pattern. Length always equals `timeSignature.beatsPerBar`.
   List<bool> get accentPattern => List.unmodifiable(_accentPattern);
+
+  /// Whether any beat in the bar is accented.
+  ///
+  /// `false` means every beat uses the normal click, so the metronome
+  /// sounds completely even. See [setAccentEnabled].
+  bool get accentEnabled => _accentEnabled;
+
+  /// The beat the single accent sits on (0-based), as set by
+  /// [setAccentBeat] and restored by `setAccentEnabled(true)`.
+  ///
+  /// When a multi-accent pattern has been set via [setAccentPattern] this
+  /// keeps its last single-accent value; it only tracks patterns with
+  /// exactly one accent.
+  int get accentBeat => _accentBeat;
 
   /// Current subdivision. Each main beat is split into
   /// `subdivision.pulsesPerBeat` pulses; the first pulse of each beat
@@ -264,17 +280,22 @@ class Metronome {
     await _channel.invokeMethod<void>('setTempo', {'bpm': bpm});
   }
 
-  /// Sets the time signature and resets the accent pattern to a sensible
-  /// default (accent on beat 1 only, all other beats unaccented).
+  /// Sets the time signature and resets any custom accent pattern to a
+  /// single accent.
   ///
-  /// To keep or customize the accent pattern, call [setAccentPattern]
-  /// after this.
+  /// [accentEnabled] and [accentBeat] survive the change: with accents
+  /// disabled the new bar stays even, and the accent keeps its beat as
+  /// long as that beat exists in the new bar (otherwise it falls back to
+  /// beat 1).
+  ///
+  /// To customize the accent pattern, call [setAccentPattern] after this.
   Future<void> setTimeSignature(TimeSignature signature) async {
     _assertReady();
     _timeSignature = signature;
+    if (_accentBeat >= signature.beatsPerBar) _accentBeat = 0;
     _accentPattern = List<bool>.generate(
       signature.beatsPerBar,
-      (i) => i == 0,
+      (i) => _accentEnabled && i == _accentBeat,
     );
     await _channel.invokeMethod<void>('setTimeSignature', {
       'numerator': signature.numerator,
@@ -288,6 +309,10 @@ class Metronome {
   ///
   /// Length must equal `timeSignature.beatsPerBar`. `true` = accent,
   /// `false` = normal.
+  ///
+  /// [accentEnabled] and [accentBeat] follow the pattern: an all-`false`
+  /// pattern disables accents, and a pattern with exactly one accent
+  /// updates [accentBeat].
   Future<void> setAccentPattern(List<bool> pattern) async {
     _assertReady();
     if (pattern.length != _timeSignature.beatsPerBar) {
@@ -297,6 +322,58 @@ class Metronome {
       );
     }
     _accentPattern = List<bool>.from(pattern);
+    _accentEnabled = _accentPattern.contains(true);
+    if (_accentPattern.where((a) => a).length == 1) {
+      _accentBeat = _accentPattern.indexOf(true);
+    }
+    await _channel.invokeMethod<void>('setAccentPattern', {
+      'accentPattern': _accentPattern,
+    });
+  }
+
+  /// Enables or disables the accent.
+  ///
+  /// With [enabled] `false` every beat uses the normal click, so the bar
+  /// sounds completely even. With `true` the accent returns to the beat it
+  /// was on before (see [accentBeat]; beat 1 by default).
+  ///
+  /// Takes effect at the next beat, like [setAccentPattern].
+  Future<void> setAccentEnabled(bool enabled) async {
+    _assertReady();
+    _accentEnabled = enabled;
+    _accentPattern = List<bool>.generate(
+      _timeSignature.beatsPerBar,
+      (i) => enabled && i == _accentBeat,
+    );
+    await _channel.invokeMethod<void>('setAccentPattern', {
+      'accentPattern': _accentPattern,
+    });
+  }
+
+  /// Puts the single accent on [beatIndex] (0-based) and removes it from
+  /// every other beat.
+  ///
+  /// [beatIndex] must be less than `timeSignature.beatsPerBar` — in 4/4
+  /// the valid positions are 0..3, in 3/4 they are 0..2. Calling this also
+  /// re-enables the accent if it was disabled.
+  ///
+  /// For more than one accent per bar, use [setAccentPattern].
+  Future<void> setAccentBeat(int beatIndex) async {
+    _assertReady();
+    if (beatIndex < 0 || beatIndex >= _timeSignature.beatsPerBar) {
+      throw ArgumentError.value(
+        beatIndex,
+        'beatIndex',
+        'must be 0..${_timeSignature.beatsPerBar - 1} '
+            '(timeSignature.beatsPerBar is ${_timeSignature.beatsPerBar})',
+      );
+    }
+    _accentBeat = beatIndex;
+    _accentEnabled = true;
+    _accentPattern = List<bool>.generate(
+      _timeSignature.beatsPerBar,
+      (i) => i == beatIndex,
+    );
     await _channel.invokeMethod<void>('setAccentPattern', {
       'accentPattern': _accentPattern,
     });

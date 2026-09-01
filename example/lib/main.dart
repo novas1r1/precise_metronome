@@ -149,13 +149,15 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
   }
 
   Future<void> _pickSignature(TimeSignature s) async {
+    if (_ready) await _metronome.setTimeSignature(s);
     setState(() {
       _sig = s;
-      _accents = List<bool>.generate(s.beatsPerBar, (i) => i == 0);
+      // The plugin keeps accent-enabled state and accent beat across
+      // time-signature changes — mirror its pattern instead of guessing.
+      _accents = _ready
+          ? List<bool>.from(_metronome.accentPattern)
+          : List<bool>.generate(s.beatsPerBar, (i) => i == 0);
     });
-    if (_ready) {
-      await _metronome.setTimeSignature(s);
-    }
   }
 
   Future<void> _toggleAccent(int i) async {
@@ -164,6 +166,15 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
       _accents[i] = !_accents[i];
     });
     if (_ready) await _metronome.setAccentPattern(_accents);
+  }
+
+  Future<void> _setAccentEnabled(bool enabled) async {
+    if (_ready) await _metronome.setAccentEnabled(enabled);
+    setState(() {
+      _accents = _ready
+          ? List<bool>.from(_metronome.accentPattern)
+          : List<bool>.generate(_sig.beatsPerBar, (i) => enabled && i == 0);
+    });
   }
 
   Future<void> _pickVoice(MetronomeVoice v) async {
@@ -271,6 +282,17 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
               const SizedBox(height: 20),
               _sectionLabel(
                 'Accents  ·  ${_sig.beatsPerBar} beat${_sig.beatsPerBar == 1 ? '' : 's'} per bar',
+              ),
+              SwitchListTile(
+                value: _accents.contains(true),
+                onChanged: _ready ? _setAccentEnabled : null,
+                title: const Text('Accent'),
+                subtitle: const Text(
+                  'Off: every beat sounds the same. Tap a beat below to '
+                  'move or add accents.',
+                ),
+                contentPadding: EdgeInsets.zero,
+                dense: true,
               ),
               const SizedBox(height: 8),
               Wrap(
