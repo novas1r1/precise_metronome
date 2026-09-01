@@ -249,6 +249,22 @@ void main() {
     );
   });
 
+  test('setVoice sends the wire name for every voice', () async {
+    final m = Metronome();
+    await m.init();
+    expect(
+      MetronomeVoice.values.map((v) => v.wireName),
+      ['tone', 'click', 'wood', 'mechanical', 'blip'],
+    );
+    for (final voice in MetronomeVoice.values) {
+      calls.clear();
+      await m.setVoice(voice);
+      expect(m.voice, voice);
+      final call = calls.firstWhere((c) => c.method == 'setVoice');
+      expect((call.arguments as Map)['voice'], voice.wireName);
+    }
+  });
+
   test('setVolume validates range', () async {
     final m = Metronome();
     await m.init();

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 — Three new voices
+
+- Added three procedurally synthesized voices (still no bundled assets):
+  - `MetronomeVoice.wood` — warm, hollow wood (modal synthesis of a
+    struck wooden bar: three inharmonic decaying partials plus a short
+    stick-impact noise). 820 Hz fundamental, 1080 Hz on accents.
+  - `MetronomeVoice.mechanical` — classic pendulum-metronome tick
+    (broadband snap plus a low wooden-case resonance). Accents ring with
+    a bell-like partial, like the bell of an old mechanical metronome,
+    so they are unmistakable.
+  - `MetronomeVoice.blip` — soft marimba-like blip with a gentle attack
+    (C5, E5 on accents); the least fatiguing voice for quiet practice.
+- Voices are rendered identically on iOS and Android (same DSP, same
+  deterministic noise), as before.
+
 ## 0.5.0 — Accent settings
 
 - Added `Metronome.setAccentEnabled(bool)`: with `false` every beat uses
