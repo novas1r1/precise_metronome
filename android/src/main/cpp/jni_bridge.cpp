@@ -43,11 +43,12 @@ JNIEXPORT void JNICALL
 Java_com_repeatlab_precise_1metronome_NativeBridge_nativeStartRamp(
     JNIEnv* /*env*/, jclass /*clazz*/, jlong handle,
     jlong initial_delay_ms, jdouble start_bpm, jdouble goal_bpm,
-    jboolean stop_at_goal, jdouble step_bpm, jint bars_per_step) {
+    jboolean stop_at_goal, jdouble step_bpm, jint bars_per_step,
+    jboolean return_to_start) {
     if (handle == 0) return;
     reinterpret_cast<MetronomeEngine*>(handle)->start_ramp(
         initial_delay_ms, start_bpm, goal_bpm, stop_at_goal != 0, step_bpm,
-        bars_per_step);
+        bars_per_step, return_to_start != 0);
 }
 
 // Returns [stepIndex, bpm, finished(0/1)] for the running ramp.

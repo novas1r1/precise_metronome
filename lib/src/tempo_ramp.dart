@@ -17,6 +17,15 @@ import 'dart:math' as math;
 /// `RampProgress` is then the one for the goal step
 /// (`RampProgress.isLastStep`); no `finished` event follows.
 ///
+/// With [returnToStart] the ramp does not end at [goalBpm]: once the goal
+/// has been played for its bars, the tempo steps back down to [startBpm] in
+/// the same increments and the ramp ends there (60 → 65 → 70 → 65 → 60 for
+/// a 60→70 ramp in steps of 5). The turnaround happens on the native side
+/// exactly on the bar line, like every other step — the metronome never
+/// stops and restarts in between. [returnToStart] requires a [goalBpm];
+/// combined with [holdAtGoal] the metronome holds [startBpm] at the end of
+/// the return leg instead of stopping.
+///
 /// If [goalBpm] is `null` the ramp is open-ended: the tempo keeps rising by
 /// [stepBpm] every [barsPerStep] bars until it reaches [maxBpm] (400), where
 /// it stays until the user calls `Metronome.stop()`. The metronome never
@@ -38,9 +47,14 @@ class TempoRamp {
   /// How many bars each step is held before advancing. Must be >= 1.
   final int barsPerStep;
 
-  /// Keep clicking at [goalBpm] after the ramp is done instead of stopping.
-  /// Has no effect on open-ended ramps, which never stop by themselves.
+  /// Keep clicking at the ramp's final tempo after it is done instead of
+  /// stopping. Has no effect on open-ended ramps, which never stop by
+  /// themselves.
   final bool holdAtGoal;
+
+  /// Step back down from [goalBpm] to [startBpm] after the goal has been
+  /// played out, as one uninterrupted ramp. Requires a [goalBpm].
+  final bool returnToStart;
 
   TempoRamp({
     required this.startBpm,
@@ -48,6 +62,7 @@ class TempoRamp {
     required this.stepBpm,
     required this.barsPerStep,
     this.holdAtGoal = false,
+    this.returnToStart = false,
   }) {
     _checkBpm(startBpm, 'startBpm');
     if (goalBpm != null) _checkBpm(goalBpm!, 'goalBpm');
@@ -56,6 +71,13 @@ class TempoRamp {
     }
     if (barsPerStep < 1) {
       throw ArgumentError.value(barsPerStep, 'barsPerStep', 'must be >= 1');
+    }
+    if (returnToStart && goalBpm == null) {
+      throw ArgumentError.value(
+        returnToStart,
+        'returnToStart',
+        'requires a goalBpm — an open-ended ramp has nothing to return from',
+      );
     }
   }
 
@@ -80,19 +102,33 @@ class TempoRamp {
   /// ramps always ascend.
   bool get ascending => _limitBpm >= startBpm;
 
-  /// Number of tempo steps until the goal is reached, including start and
-  /// goal. `startBpm == goalBpm` counts as a single step. For open-ended
-  /// ramps this is the number of steps until [maxBpm] is reached — the
-  /// tempo then holds there, so it is not a "total" in the sense of an
-  /// end.
-  int get totalSteps => 1 + ((_limitBpm - startBpm).abs() / stepBpm).ceil();
+  /// Number of steps in one leg: from [startBpm] up to (or down to) the
+  /// limit tempo, including both ends.
+  int get _legSteps => 1 + ((_limitBpm - startBpm).abs() / stepBpm).ceil();
 
-  /// Tempo played at [stepIndex] (0-based). The last step is always
-  /// exactly [goalBpm] (or [maxBpm] when open-ended); indices beyond
-  /// [totalSteps] are clamped to it.
+  /// Number of tempo steps the ramp plays, including start and goal.
+  /// `startBpm == goalBpm` counts as a single step. With [returnToStart]
+  /// the return leg is counted too; the goal step is shared between the
+  /// two legs and therefore counted once. For open-ended ramps this is the
+  /// number of steps until [maxBpm] is reached — the tempo then holds
+  /// there, so it is not a "total" in the sense of an end.
+  int get totalSteps => returnToStart ? 2 * _legSteps - 1 : _legSteps;
+
+  /// Tempo played at [stepIndex] (0-based), counting straight through both
+  /// legs of a [returnToStart] ramp. Indices beyond [totalSteps] are
+  /// clamped to the final tempo — [goalBpm] (or [maxBpm] when open-ended),
+  /// or [startBpm] on a return leg.
   double bpmAt(int stepIndex) {
     if (stepIndex < 0) {
       throw RangeError.range(stepIndex, 0, null, 'stepIndex');
+    }
+    if (returnToStart && stepIndex >= _legSteps) {
+      // Return leg: step away from the limit, back towards startBpm.
+      final back = stepIndex - (_legSteps - 1);
+      final raw = ascending
+          ? _limitBpm - stepBpm * back
+          : _limitBpm + stepBpm * back;
+      return ascending ? math.max(raw, startBpm) : math.min(raw, startBpm);
     }
     final raw = ascending
         ? startBpm + stepBpm * stepIndex
@@ -100,8 +136,7 @@ class TempoRamp {
     return ascending ? math.min(raw, _limitBpm) : math.max(raw, _limitBpm);
   }
 
-  /// All distinct tempi in playing order (up to and including the goal or
-  /// [maxBpm]).
+  /// Every tempo in playing order, both legs included.
   List<double> get steps =>
       List<double>.generate(totalSteps, bpmAt, growable: false);
 
@@ -111,11 +146,13 @@ class TempoRamp {
     'stopAtGoal': stopsAtGoal,
     'stepBpm': stepBpm,
     'barsPerStep': barsPerStep,
+    'returnToStart': returnToStart,
   };
 
   @override
   String toString() =>
-      'TempoRamp($startBpm → ${goalBpm ?? '∞'}, step $stepBpm, '
+      'TempoRamp($startBpm → ${goalBpm ?? '∞'}'
+      '${returnToStart ? ' → $startBpm' : ''}, step $stepBpm, '
       '$barsPerStep bars/step${holdAtGoal ? ', hold at goal' : ''})';
 }
 

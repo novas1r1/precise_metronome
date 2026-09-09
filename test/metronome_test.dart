@@ -145,6 +145,92 @@ void main() {
     );
   });
 
+  test('a per-beat pattern is sent expanded over the pulse grid', () async {
+    final m = Metronome();
+    await m.init();
+    await m.setTimeSignature(TimeSignature(3, 4));
+    await m.setSubdivision(Subdivision.duple);
+    calls.clear();
+
+    await m.setAccentPattern([true, false, true]);
+
+    final call = calls.lastWhere((c) => c.method == 'setAccentPattern');
+    final sent = ((call.arguments as Map)['accentPattern'] as List).cast<bool>();
+    // Beat accents land on each beat's own pulse; the off-beats stay clear.
+    expect(sent, [true, false, false, false, true, false]);
+    expect(m.accentPattern, [true, false, true]);
+    expect(m.pulseAccents, sent);
+  });
+
+  test('a per-pulse pattern can accent subdivision pulses', () async {
+    final m = Metronome();
+    await m.init();
+    await m.setTimeSignature(TimeSignature(2, 4));
+    await m.setSubdivision(Subdivision.triplet);
+    calls.clear();
+
+    // Beat 1, plus the last triplet of beat 2 — a pickup into the downbeat.
+    await m.setAccentPattern([true, false, false, false, false, true]);
+
+    final call = calls.lastWhere((c) => c.method == 'setAccentPattern');
+    final sent = ((call.arguments as Map)['accentPattern'] as List).cast<bool>();
+    expect(sent, [true, false, false, false, false, true]);
+    expect(m.pulseAccents, sent);
+    // The per-beat view only reports the beats' own pulses.
+    expect(m.accentPattern, [true, false]);
+  });
+
+  test('setAccentPattern rejects a length that is neither grid', () async {
+    final m = Metronome();
+    await m.init();
+    await m.setTimeSignature(TimeSignature(4, 4));
+    await m.setSubdivision(Subdivision.duple);
+    // 4 beats x 2 pulses = 8; 5 is neither 4 nor 8.
+    expect(
+      () => m.setAccentPattern([true, false, true, false, true]),
+      throwsArgumentError,
+    );
+    await expectLater(m.setAccentPattern(List.filled(8, false)), completes);
+    await expectLater(m.setAccentPattern(List.filled(4, false)), completes);
+  });
+
+  test('changing subdivision keeps beat accents and drops sub accents',
+      () async {
+    final m = Metronome();
+    await m.init();
+    await m.setTimeSignature(TimeSignature(2, 4));
+    await m.setSubdivision(Subdivision.duple);
+    await m.setAccentPattern([true, true, false, false]); // beat 1 + its 'and'
+    calls.clear();
+
+    await m.setSubdivision(Subdivision.triplet);
+
+    expect(m.pulseAccents.length, 6);
+    // Beat 1 stays accented, the accent on the old off-beat is gone.
+    expect(m.pulseAccents, [true, false, false, false, false, false]);
+    expect(m.accentPattern, [true, false]);
+    final call = calls.lastWhere((c) => c.method == 'setAccentPattern');
+    expect(
+      ((call.arguments as Map)['accentPattern'] as List).cast<bool>(),
+      m.pulseAccents,
+    );
+  });
+
+  test('setTimeSignature sizes the pattern to the pulse grid', () async {
+    final m = Metronome();
+    await m.init();
+    await m.setSubdivision(Subdivision.quadruple);
+    calls.clear();
+
+    await m.setTimeSignature(TimeSignature(3, 4));
+
+    final call = calls.firstWhere((c) => c.method == 'setTimeSignature');
+    final sent = ((call.arguments as Map)['accentPattern'] as List).cast<bool>();
+    expect(sent.length, 12, reason: '3 beats x 4 pulses');
+    expect(sent.first, isTrue);
+    expect(sent.sublist(1), everyElement(false));
+  });
+
   test('setVolume validates range', () async {
     final m = Metronome();
     await m.init();

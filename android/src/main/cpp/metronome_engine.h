@@ -24,11 +24,13 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     void start(int64_t initial_delay_ms = 0);
     // Like start(), but steps the tempo from start_bpm towards goal_bpm by
     // step_bpm every bars_per_step bars (last step clamped to goal_bpm). With
-    // stop_at_goal it stops itself after goal_bpm has been played for
-    // bars_per_step bars; otherwise it holds goal_bpm until stop().
+    // return_to_start the ramp turns around once goal_bpm has been played
+    // out and steps back down to start_bpm without interrupting scheduling.
+    // With stop_at_goal it stops itself after the final tempo has been
+    // played for bars_per_step bars; otherwise it holds it until stop().
     void start_ramp(int64_t initial_delay_ms, double start_bpm,
                     double goal_bpm, bool stop_at_goal, double step_bpm,
-                    int bars_per_step);
+                    int bars_per_step, bool return_to_start);
     void stop();
     void dispose();
 
@@ -84,11 +86,13 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
                            oboe::Result result) override;
 
  private:
-    static constexpr int kMaxPattern = 32;
+    // One flag per pulse of a bar: 32 beats x 4 subdivision pulses.
+    static constexpr int kMaxPattern = 128;
     static constexpr int kMaxActiveClicks = 16;
 
     void begin_session(int64_t initial_delay_ms);
     bool on_ramp_bar_completed();
+    bool ramp_at_goal() const;
     bool open_stream();
     void close_stream();
     void rebuild_buffers(double sample_rate);
@@ -120,6 +124,7 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     std::atomic<bool> ramp_stop_at_goal_{true};
     std::atomic<double> ramp_step_bpm_{0.0};
     std::atomic<int> ramp_bars_per_step_{1};
+    std::atomic<bool> ramp_return_to_start_{false};
     // Ramp progress published by the audio thread.
     std::atomic<int> ramp_step_index_{0};
     std::atomic<double> ramp_bpm_{120.0};
@@ -134,7 +139,9 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     std::atomic<uint32_t> beat_write_count_{0};
     uint32_t beat_read_count_ = 0;  // Flutter thread only
 
-    // Accent pattern: fixed-size array + atomic length.
+    // Accent pattern, one flag per pulse of the bar (beat * pulses_per_beat
+    // + pulse), so subdivision pulses can be accented too.
+    // Fixed-size array + atomic length.
     // Writes from Flutter thread are not strictly atomic per-element, but the
     // worst case is a briefly incorrect accent on a single beat during an
     // update, which is acceptable for a metronome.
@@ -160,6 +167,11 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     bool ramp_active_ = false;
     int ramp_bars_in_step_ = 0;
     double ramp_current_bpm_ = 120.0;
+    // Tempo the ramp is currently heading for: goal_bpm on the way up,
+    // start_bpm after a return_to_start turnaround.
+    double ramp_effective_goal_ = 120.0;
+    double ramp_return_bpm_ = 120.0;
+    bool ramp_return_pending_ = false;
 
     struct ActiveClick {
         const float* samples;

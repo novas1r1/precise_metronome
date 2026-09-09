@@ -56,7 +56,8 @@ class Metronome {
 
   double _bpm = 120.0;
   TimeSignature _timeSignature = TimeSignature(4, 4);
-  List<bool> _accentPattern = const [true, false, false, false];
+  /// One flag per pulse of the bar: `beat * pulsesPerBeat + pulse`.
+  List<bool> _pulseAccents = const [true, false, false, false];
   Subdivision _subdivision = Subdivision.none;
   MetronomeVoice _voice = MetronomeVoice.tone;
   double _volume = 0.8;
@@ -112,8 +113,20 @@ class Metronome {
   /// Current time signature.
   TimeSignature get timeSignature => _timeSignature;
 
-  /// Current accent pattern. Length always equals `timeSignature.beatsPerBar`.
-  List<bool> get accentPattern => List.unmodifiable(_accentPattern);
+  /// Current accent pattern, one flag per main beat. Length always equals
+  /// `timeSignature.beatsPerBar`. A beat counts as accented when its own
+  /// pulse is; see [pulseAccents] for accents on subdivision pulses.
+  List<bool> get accentPattern => List<bool>.unmodifiable(
+    List<bool>.generate(
+      _timeSignature.beatsPerBar,
+      (beat) => _pulseAccents[beat * _subdivision.pulsesPerBeat],
+    ),
+  );
+
+  /// Current accent pattern, one flag per audible pulse of the bar, indexed
+  /// `beat * subdivision.pulsesPerBeat + pulse`. Length always equals
+  /// `timeSignature.beatsPerBar * subdivision.pulsesPerBeat`.
+  List<bool> get pulseAccents => List.unmodifiable(_pulseAccents);
 
   /// Current subdivision. Each main beat is split into
   /// `subdivision.pulsesPerBeat` pulses; the first pulse of each beat
@@ -175,9 +188,15 @@ class Metronome {
   /// [isPlaying] becomes `false`. Listen to [rampProgress] to follow the
   /// steps.
   ///
-  /// With `ramp.holdAtGoal` the metronome keeps clicking at the goal tempo
-  /// instead of stopping; [activeRamp] stays set and the last
-  /// [RampProgress] is the goal step (`isLastStep`). End it with [stop].
+  /// With `ramp.holdAtGoal` the metronome keeps clicking at the ramp's final
+  /// tempo instead of stopping; [activeRamp] stays set and the last
+  /// [RampProgress] is the final step (`isLastStep`). End it with [stop].
+  ///
+  /// With `ramp.returnToStart` the ramp turns around once the goal has been
+  /// played out and steps back down to `ramp.startBpm`. The turnaround is
+  /// handled by the same native ramp — the metronome does not stop and
+  /// restart — so it lands on the bar line as accurately as every other
+  /// step. [RampProgress.stepIndex] keeps counting through both legs.
   ///
   /// An open-ended ramp (`ramp.goalBpm == null`) keeps stepping up until
   /// [TempoRamp.maxBpm], holds there, and only ends with [stop].
@@ -272,50 +291,87 @@ class Metronome {
   Future<void> setTimeSignature(TimeSignature signature) async {
     _assertReady();
     _timeSignature = signature;
-    _accentPattern = List<bool>.generate(
-      signature.beatsPerBar,
+    _pulseAccents = List<bool>.generate(
+      signature.beatsPerBar * _subdivision.pulsesPerBeat,
       (i) => i == 0,
     );
     await _channel.invokeMethod<void>('setTimeSignature', {
       'numerator': signature.numerator,
       'denominator': signature.denominator,
       'beatsPerBar': signature.beatsPerBar,
-      'accentPattern': _accentPattern,
+      'accentPattern': _pulseAccents,
     });
   }
 
-  /// Sets a custom accent pattern.
+  /// Sets a custom accent pattern. `true` = accent, `false` = normal.
   ///
-  /// Length must equal `timeSignature.beatsPerBar`. `true` = accent,
-  /// `false` = normal.
+  /// The length selects what a flag refers to:
+  ///
+  /// * `timeSignature.beatsPerBar` — one flag per main beat. Subdivision
+  ///   pulses keep the softer sub click.
+  /// * `timeSignature.beatsPerBar * subdivision.pulsesPerBeat` — one flag
+  ///   per audible pulse, indexed `beat * pulsesPerBeat + pulse`, so
+  ///   subdivision pulses can carry the accent click too.
+  ///
+  /// With [Subdivision.none] the two are the same length and mean the same
+  /// thing. Changing the subdivision keeps the main-beat accents and clears
+  /// any accents that were set on subdivision pulses.
   Future<void> setAccentPattern(List<bool> pattern) async {
     _assertReady();
-    if (pattern.length != _timeSignature.beatsPerBar) {
+    final beats = _timeSignature.beatsPerBar;
+    final pulses = _subdivision.pulsesPerBeat;
+    if (pattern.length == beats) {
+      _pulseAccents = _expandToPulses(pattern, pulses);
+    } else if (pattern.length == beats * pulses) {
+      _pulseAccents = List<bool>.from(pattern);
+    } else {
       throw ArgumentError(
         'Accent pattern length (${pattern.length}) must equal '
-        'timeSignature.beatsPerBar (${_timeSignature.beatsPerBar}).',
+        'timeSignature.beatsPerBar ($beats) or '
+        'timeSignature.beatsPerBar * subdivision.pulsesPerBeat '
+        '(${beats * pulses}).',
       );
     }
-    _accentPattern = List<bool>.from(pattern);
     await _channel.invokeMethod<void>('setAccentPattern', {
-      'accentPattern': _accentPattern,
+      'accentPattern': _pulseAccents,
     });
+  }
+
+  /// Spreads one flag per beat over [pulsesPerBeat] pulses: the beat's own
+  /// pulse keeps the flag, the pulses in between are unaccented.
+  static List<bool> _expandToPulses(List<bool> perBeat, int pulsesPerBeat) {
+    return List<bool>.generate(
+      perBeat.length * pulsesPerBeat,
+      (i) => i % pulsesPerBeat == 0 && perBeat[i ~/ pulsesPerBeat],
+    );
   }
 
   /// Sets the subdivision — how each main beat is split into audible
   /// pulses.
   ///
-  /// The first pulse of each beat uses the accent or normal click (per
-  /// the current accent pattern); additional pulses use a softer "sub"
-  /// click. The tempo continues to refer to the main-beat rate.
+  /// Pulses carrying an accent (see [setAccentPattern]) use the accent
+  /// click; other main beats use the normal click and the pulses in
+  /// between use a softer "sub" click. The tempo continues to refer to the
+  /// main-beat rate.
+  ///
+  /// The accent pattern is rescaled to the new pulse grid: main-beat
+  /// accents are kept and any accents on subdivision pulses are cleared,
+  /// since those slots no longer line up.
   ///
   /// See [Subdivision] for the available options. Changes take effect
   /// at the next pulse boundary (within one main-beat interval).
   Future<void> setSubdivision(Subdivision subdivision) async {
     _assertReady();
-    _subdivision = subdivision;
+    if (subdivision != _subdivision) {
+      final perBeat = accentPattern;
+      _subdivision = subdivision;
+      _pulseAccents = _expandToPulses(perBeat, subdivision.pulsesPerBeat);
+    }
     await _channel.invokeMethod<void>('setSubdivision', {
       'pulsesPerBeat': subdivision.pulsesPerBeat,
+    });
+    await _channel.invokeMethod<void>('setAccentPattern', {
+      'accentPattern': _pulseAccents,
     });
   }
 
@@ -451,7 +507,7 @@ class Metronome {
       'numerator': _timeSignature.numerator,
       'denominator': _timeSignature.denominator,
       'beatsPerBar': _timeSignature.beatsPerBar,
-      'accentPattern': _accentPattern,
+      'accentPattern': _pulseAccents,
     });
     await _channel.invokeMethod<void>('setSubdivision', {
       'pulsesPerBeat': _subdivision.pulsesPerBeat,

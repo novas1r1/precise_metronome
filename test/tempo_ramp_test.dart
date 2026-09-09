@@ -37,6 +37,80 @@ void main() {
       expect(ramp.steps, [120, 100, 90]);
     });
 
+    test('returnToStart walks back down to the start tempo', () {
+      final ramp = TempoRamp(
+        startBpm: 60,
+        goalBpm: 70,
+        stepBpm: 5,
+        barsPerStep: 4,
+        returnToStart: true,
+      );
+      expect(ramp.totalSteps, 5);
+      expect(ramp.steps, [60, 65, 70, 65, 60]);
+      expect(ramp.ascending, isTrue);
+    });
+
+    test('returnToStart mirrors a clamped last step by distance', () {
+      // Up: 80, 95, 110, 120 (last step shortened). Down covers the same
+      // 40 BPM in the same three moves, clamping at the start instead.
+      final ramp = TempoRamp(
+        startBpm: 80,
+        goalBpm: 120,
+        stepBpm: 15,
+        barsPerStep: 4,
+        returnToStart: true,
+      );
+      expect(ramp.totalSteps, 7);
+      expect(ramp.steps, [80, 95, 110, 120, 105, 90, 80]);
+    });
+
+    test('returnToStart on a descending ramp climbs back up', () {
+      final ramp = TempoRamp(
+        startBpm: 120,
+        goalBpm: 90,
+        stepBpm: 20,
+        barsPerStep: 1,
+        returnToStart: true,
+      );
+      expect(ramp.steps, [120, 100, 90, 110, 120]);
+    });
+
+    test('bpmAt clamps past the end of the return leg', () {
+      final ramp = TempoRamp(
+        startBpm: 60,
+        goalBpm: 70,
+        stepBpm: 5,
+        barsPerStep: 4,
+        returnToStart: true,
+      );
+      expect(ramp.bpmAt(4), 60.0);
+      expect(ramp.bpmAt(9), 60.0);
+    });
+
+    test('returnToStart with start == goal stays a single step', () {
+      final ramp = TempoRamp(
+        startBpm: 100,
+        goalBpm: 100,
+        stepBpm: 5,
+        barsPerStep: 3,
+        returnToStart: true,
+      );
+      expect(ramp.totalSteps, 1);
+      expect(ramp.steps, [100]);
+    });
+
+    test('returnToStart needs a goal to return from', () {
+      expect(
+        () => TempoRamp(
+          startBpm: 90,
+          stepBpm: 4,
+          barsPerStep: 8,
+          returnToStart: true,
+        ),
+        throwsArgumentError,
+      );
+    });
+
     test('start == goal is a single step', () {
       final ramp = TempoRamp(
         startBpm: 100,
@@ -201,6 +275,63 @@ void main() {
       expect(progress.map((p) => p.stepIndex), [0, 1, 3]);
       expect(progress.last.finished, isTrue);
       expect(progress.last.totalSteps, 4);
+    });
+
+    test('returnToStart is sent and progress counts through both legs',
+        () async {
+      late MockStreamHandlerEventSink sink;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(
+            rampChannel,
+            MockStreamHandler.inline(onListen: (_, events) => sink = events),
+          );
+      final m = Metronome();
+      await m.init();
+      calls.clear();
+
+      final roundTrip = TempoRamp(
+        startBpm: 60,
+        goalBpm: 70,
+        stepBpm: 5,
+        barsPerStep: 4,
+        returnToStart: true,
+      );
+      final progress = <RampProgress>[];
+      m.rampProgress.listen(progress.add);
+      await m.startRamp(roundTrip);
+      await Future<void>.delayed(Duration.zero);
+
+      final args =
+          calls.firstWhere((c) => c.method == 'startRamp').arguments as Map;
+      expect(args['returnToStart'], isTrue);
+      expect(args['goalBpm'], 70.0);
+      expect(progress.first.totalSteps, 5);
+
+      // The native side keeps one step counter across the turnaround, so
+      // the descent continues where the ascent left off.
+      for (final step in [
+        [1, 65.0],
+        [2, 70.0],
+        [3, 65.0],
+      ]) {
+        sink.success({
+          'stepIndex': step[0],
+          'bpm': step[1],
+          'finished': false,
+        });
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(m.tempo, 65.0);
+      expect(m.isPlaying, isTrue);
+      expect(progress.last.isLastStep, isFalse);
+
+      sink.success({'stepIndex': 4, 'bpm': 60.0, 'finished': true});
+      await Future<void>.delayed(Duration.zero);
+      expect(m.tempo, 60.0);
+      expect(m.isPlaying, isFalse);
+      expect(progress.map((p) => p.bpm), [60.0, 65.0, 70.0, 65.0, 60.0]);
+      expect(progress.last.isLastStep, isTrue);
+      expect(progress.last.finished, isTrue);
     });
 
     test('holdAtGoal ramp reaches the goal step and keeps playing', () async {

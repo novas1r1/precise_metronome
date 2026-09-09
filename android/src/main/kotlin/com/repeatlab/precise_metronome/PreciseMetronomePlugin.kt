@@ -136,6 +136,8 @@ class PreciseMetronomePlugin :
                     val stopAtGoal = call.argument<Boolean>("stopAtGoal") ?: true
                     val stepBpm = call.argument<Number>("stepBpm")?.toDouble()
                     val barsPerStep = call.argument<Number>("barsPerStep")?.toInt()
+                    val returnToStart =
+                        call.argument<Boolean>("returnToStart") ?: false
                     if (startBpm == null || goalBpm == null ||
                         stepBpm == null || barsPerStep == null
                     ) {
@@ -149,7 +151,7 @@ class PreciseMetronomePlugin :
                     requireHandle(result)?.let {
                         NativeBridge.nativeStartRamp(
                             it, initialDelayMs, startBpm, goalBpm, stopAtGoal,
-                            stepBpm, barsPerStep
+                            stepBpm, barsPerStep, returnToStart
                         )
                         startRampPolling()
                         setEnginePlaying(true)

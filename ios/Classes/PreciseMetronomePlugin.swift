@@ -85,13 +85,15 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
                 result(argError("startBpm, goalBpm, stepBpm: Double, stopAtGoal: Bool, barsPerStep: Int")); return
             }
             let initialDelayMs = args["initialDelayMs"] as? Int ?? 0
+            let returnToStart = args["returnToStart"] as? Bool ?? false
             requireEngine(result)?.startRamp(
                 initialDelaySeconds: Double(initialDelayMs) / 1000.0,
                 startBpm: startBpm,
                 goalBpm: goalBpm,
                 stopAtGoal: stopAtGoal,
                 stepBpm: stepBpm,
-                barsPerStep: barsPerStep)
+                barsPerStep: barsPerStep,
+                returnToStart: returnToStart)
             result(nil)
 
         case "nudge":

@@ -23,7 +23,8 @@ internal object NativeBridge {
         goalBpm: Double,
         stopAtGoal: Boolean,
         stepBpm: Double,
-        barsPerStep: Int
+        barsPerStep: Int,
+        returnToStart: Boolean
     )
     /** Returns [stepIndex, bpm, finished (0/1)] of the running ramp. */
     @JvmStatic external fun nativeRampState(handle: Long): DoubleArray

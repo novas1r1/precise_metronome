@@ -47,6 +47,7 @@ final class MetronomeEngine {
 
     private var bpm: Double = 120.0
     private var beatsPerBar: Int = 4
+    /// One flag per pulse of the bar: `beat * pulsesPerBeat + pulse`.
     private var accentPattern: [Bool] = [true, false, false, false]
     private var pulsesPerBeat: Int = 1
 
@@ -63,13 +64,17 @@ final class MetronomeEngine {
 
     // Tempo ramp (all on serialQueue).
     private var rampActive = false
-    private var rampGoalBpm: Double = 120
     private var rampStopAtGoal = true
     private var rampStepBpm: Double = 0
     private var rampBarsPerStep = 1
     private var rampBarsInStep = 0
     private var rampStepIndex = 0
     private var rampCurrentBpm: Double = 120
+    /// Tempo the ramp is currently heading for: the goal on the way up,
+    /// `startBpm` after a `returnToStart` turnaround.
+    private var rampEffectiveGoal: Double = 120
+    private var rampReturnBpm: Double = 120
+    private var rampReturnPending = false
 
     // Beat events (serialQueue).
     private var beatEventsEnabled = false
@@ -123,20 +128,25 @@ final class MetronomeEngine {
 
     /// Like `start`, but steps the tempo from `startBpm` towards `goalBpm`
     /// by `stepBpm` every `barsPerStep` bars (last step clamped to the
-    /// goal). With `stopAtGoal` it stops itself after the goal has been
-    /// played for `barsPerStep` bars; otherwise it holds the goal tempo
-    /// until `stop()`.
+    /// goal). With `returnToStart` the ramp turns around once the goal has
+    /// been played out and steps back down to `startBpm` without
+    /// interrupting scheduling. With `stopAtGoal` it stops itself after the
+    /// final tempo has been played for `barsPerStep` bars; otherwise it
+    /// holds that tempo until `stop()`.
     func startRamp(initialDelaySeconds: Double,
                    startBpm: Double,
                    goalBpm: Double,
                    stopAtGoal: Bool,
                    stepBpm: Double,
-                   barsPerStep: Int) {
+                   barsPerStep: Int,
+                   returnToStart: Bool) {
         serialQueue.async { [weak self] in
             guard let self = self else { return }
             self.bpm = startBpm
             self.rampCurrentBpm = startBpm
-            self.rampGoalBpm = goalBpm
+            self.rampEffectiveGoal = goalBpm
+            self.rampReturnBpm = startBpm
+            self.rampReturnPending = returnToStart
             self.rampStopAtGoal = stopAtGoal
             self.rampStepBpm = stepBpm
             self.rampBarsPerStep = max(barsPerStep, 1)
@@ -366,18 +376,18 @@ final class MetronomeEngine {
         let horizon = currentSampleTime + AVAudioFramePosition(lookaheadSeconds * sampleRate)
 
         while nextPulseSampleTime < horizon {
-            let buffer: AVAudioPCMBuffer
-            var isAccent = false
-            if pulseIndexInBeat == 0 {
-                // Main beat: pick accent or normal from the pattern.
-                isAccent = beatIndexInBar < accentPattern.count
-                    ? accentPattern[beatIndexInBar]
-                    : (beatIndexInBar == 0)
-                buffer = isAccent ? buffers.accent : buffers.normal
-            } else {
-                // Off-beat subdivision pulse: softer sub click.
-                buffer = buffers.sub
-            }
+            // The pattern carries one flag per pulse of the bar, so a
+            // subdivision pulse can be accented too. An unaccented pulse
+            // uses the normal click on a main beat and the softer sub
+            // click in between.
+            let slot = beatIndexInBar * pulsesPerBeat + pulseIndexInBeat
+            let isAccent = accentPattern.isEmpty
+                ? (slot == 0)
+                : accentPattern[slot % accentPattern.count]
+            let buffer: AVAudioPCMBuffer =
+                isAccent
+                    ? buffers.accent
+                    : (pulseIndexInBeat == 0 ? buffers.normal : buffers.sub)
 
             let when = AVAudioTime(sampleTime: nextPulseSampleTime, atRate: sampleRate)
             playerNode.scheduleBuffer(buffer, at: when, options: [], completionHandler: nil)
@@ -416,24 +426,40 @@ final class MetronomeEngine {
 
     // MARK: - Tempo ramp (serialQueue only)
 
-    /// Advances the ramp after a full bar. Returns true once the goal tempo
-    /// has been played for its full number of bars.
+    /// True when the current tempo has reached the tempo the ramp is
+    /// heading for. serialQueue only.
+    private var rampAtGoal: Bool {
+        rampEffectiveGoal >= rampCurrentBpm
+            ? rampCurrentBpm >= rampEffectiveGoal
+            : rampCurrentBpm <= rampEffectiveGoal
+    }
+
+    /// Advances the ramp after a full bar. Returns true once the final
+    /// tempo has been played for its full number of bars.
     private func rampBarCompleted() -> Bool {
         rampBarsInStep += 1
         guard rampBarsInStep >= rampBarsPerStep else { return false }
         rampBarsInStep = 0
 
-        let ascending = rampGoalBpm >= rampCurrentBpm
-        let atGoal = ascending
-            ? rampCurrentBpm >= rampGoalBpm
-            : rampCurrentBpm <= rampGoalBpm
-        // Open-ended ramps just keep holding the limit tempo.
-        if atGoal || rampStepBpm <= 0 { return rampStopAtGoal }
+        if rampStepBpm <= 0 { return rampStopAtGoal }
+        if rampAtGoal {
+            // The goal tempo has had its bars. Turn around once if a return
+            // leg was requested; otherwise this is the end of the ramp.
+            // Open-ended ramps just keep holding the limit tempo.
+            guard rampReturnPending else { return rampStopAtGoal }
+            rampReturnPending = false
+            rampEffectiveGoal = rampReturnBpm
+            // A ramp that never left its start has nothing to return from.
+            if rampAtGoal { return rampStopAtGoal }
+        }
 
+        let ascending = rampEffectiveGoal >= rampCurrentBpm
         var next = ascending
             ? rampCurrentBpm + rampStepBpm
             : rampCurrentBpm - rampStepBpm
-        next = ascending ? min(next, rampGoalBpm) : max(next, rampGoalBpm)
+        next = ascending
+            ? min(next, rampEffectiveGoal)
+            : max(next, rampEffectiveGoal)
         rampCurrentBpm = next
         bpm = next
         rampStepIndex += 1

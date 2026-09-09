@@ -12,7 +12,7 @@
 namespace precise_metronome {
 
 MetronomeEngine::MetronomeEngine() {
-    // Default accent pattern: beat 1 accented, rest unaccented.
+    // Default accent pattern: the bar's first pulse accented.
     accent_pattern_[0] = true;
     for (int i = 1; i < kMaxPattern; ++i) accent_pattern_[i] = false;
     active_clicks_.reserve(kMaxActiveClicks);
@@ -103,9 +103,11 @@ void MetronomeEngine::start(int64_t initial_delay_ms) {
 
 void MetronomeEngine::start_ramp(int64_t initial_delay_ms, double start_bpm,
                                  double goal_bpm, bool stop_at_goal,
-                                 double step_bpm, int bars_per_step) {
+                                 double step_bpm, int bars_per_step,
+                                 bool return_to_start) {
     bpm_.store(start_bpm, std::memory_order_relaxed);
     ramp_goal_bpm_.store(goal_bpm, std::memory_order_relaxed);
+    ramp_return_to_start_.store(return_to_start, std::memory_order_relaxed);
     ramp_stop_at_goal_.store(stop_at_goal, std::memory_order_relaxed);
     ramp_step_bpm_.store(step_bpm, std::memory_order_relaxed);
     ramp_bars_per_step_.store(std::max(bars_per_step, 1),
@@ -232,23 +234,42 @@ bool MetronomeEngine::on_ramp_bar_completed() {
     }
     ramp_bars_in_step_ = 0;
 
-    const double goal = ramp_goal_bpm_.load(std::memory_order_relaxed);
     const double step = ramp_step_bpm_.load(std::memory_order_relaxed);
-    const bool ascending = goal >= ramp_current_bpm_;
-    const bool at_goal = ascending ? (ramp_current_bpm_ >= goal)
-                                   : (ramp_current_bpm_ <= goal);
-    if (at_goal || step <= 0.0) {
-        // Open-ended ramps just keep holding the limit tempo.
+    if (step <= 0.0) {
         return ramp_stop_at_goal_.load(std::memory_order_relaxed);
     }
+    if (ramp_at_goal()) {
+        // The goal tempo has had its bars. Turn around once if a return
+        // leg was requested; otherwise this is the end of the ramp.
+        // Open-ended ramps just keep holding the limit tempo.
+        if (!ramp_return_pending_) {
+            return ramp_stop_at_goal_.load(std::memory_order_relaxed);
+        }
+        ramp_return_pending_ = false;
+        ramp_effective_goal_ = ramp_return_bpm_;
+        // A ramp that never left its start has nothing to return from.
+        if (ramp_at_goal()) {
+            return ramp_stop_at_goal_.load(std::memory_order_relaxed);
+        }
+    }
+    const bool ascending = ramp_effective_goal_ >= ramp_current_bpm_;
     double next = ascending ? ramp_current_bpm_ + step
                             : ramp_current_bpm_ - step;
-    next = ascending ? std::min(next, goal) : std::max(next, goal);
+    next = ascending ? std::min(next, ramp_effective_goal_)
+                     : std::max(next, ramp_effective_goal_);
     ramp_current_bpm_ = next;
     bpm_.store(next, std::memory_order_relaxed);
     ramp_bpm_.store(next, std::memory_order_relaxed);
     ramp_step_index_.fetch_add(1, std::memory_order_release);
     return false;
+}
+
+// True when the current tempo has reached the tempo the ramp is heading
+// for. Audio thread only.
+bool MetronomeEngine::ramp_at_goal() const {
+    return ramp_effective_goal_ >= ramp_current_bpm_
+               ? ramp_current_bpm_ >= ramp_effective_goal_
+               : ramp_current_bpm_ <= ramp_effective_goal_;
 }
 
 oboe::DataCallbackResult MetronomeEngine::onAudioReady(
@@ -283,6 +304,10 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         ramp_active_ = ramp_enabled_.load(std::memory_order_acquire);
         ramp_bars_in_step_ = 0;
         ramp_current_bpm_ = bpm_.load(std::memory_order_relaxed);
+        ramp_effective_goal_ = ramp_goal_bpm_.load(std::memory_order_relaxed);
+        ramp_return_bpm_ = ramp_current_bpm_;
+        ramp_return_pending_ =
+            ramp_return_to_start_.load(std::memory_order_relaxed);
     }
 
     // Subdivision change: snap to a clean beat boundary at the next pulse.
@@ -366,23 +391,22 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
                 const int offset =
                     static_cast<int>(next_pulse_frame_ - buf_start);
 
-                // Pick the buffer for this pulse. Main beat (pulse 0 within
-                // the beat) uses accent/normal per the pattern; off-beat
-                // subdivision pulses use the sub buffer.
-                const std::vector<float>* src_ptr = nullptr;
-                if (pulse_index_in_beat_ == 0) {
-                    const int pattern_len =
-                        pattern_length_.load(std::memory_order_acquire);
-                    const int idx = (pattern_len > 0)
-                                        ? (beat_index_in_bar_ % pattern_len)
-                                        : 0;
-                    const bool accent = (idx < kMaxPattern)
-                                            ? accent_pattern_[idx]
-                                            : (idx == 0);
-                    src_ptr = accent ? &accent_buf : &normal_buf;
-                } else {
-                    src_ptr = &sub_buf;
-                }
+                // Pick the buffer for this pulse. The pattern carries one
+                // flag per pulse of the bar, so a subdivision pulse can be
+                // accented too. An unaccented pulse uses the normal click
+                // on a main beat and the softer sub click in between.
+                const int slot =
+                    beat_index_in_bar_ * ppb_now + pulse_index_in_beat_;
+                const int pattern_len =
+                    pattern_length_.load(std::memory_order_acquire);
+                const bool accent =
+                    (pattern_len > 0)
+                        ? accent_pattern_[slot % pattern_len]
+                        : (slot == 0);
+                const std::vector<float>* src_ptr =
+                    accent ? &accent_buf
+                           : (pulse_index_in_beat_ == 0 ? &normal_buf
+                                                        : &sub_buf);
 
                 if (beat_events_enabled_.load(std::memory_order_relaxed) &&
                     (pulse_index_in_beat_ == 0 ||

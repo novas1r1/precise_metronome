@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.0 — Accents on subdivision pulses
+
+- `setAccentPattern` now also accepts a pattern with one flag per audible
+  pulse (`timeSignature.beatsPerBar * subdivision.pulsesPerBeat`, indexed
+  `beat * pulsesPerBeat + pulse`), so a subdivision pulse can carry the
+  accent click instead of always taking the softer sub click. Passing one
+  flag per main beat keeps working exactly as before.
+- Added `Metronome.pulseAccents` for the per-pulse view. `accentPattern`
+  still reports one flag per main beat.
+- `setSubdivision` rescales the pattern onto the new pulse grid: main-beat
+  accents are kept, accents that sat on subdivision pulses are cleared.
+- `BeatEvent.accent` is now `true` for an accented subdivision pulse.
+- Both engines index the pattern per pulse; the native maximum grew from 32
+  beats to 128 pulses per bar.
+
+## 0.5.0 — Ramp back down
+
+- Added `TempoRamp.returnToStart`: after the goal tempo has been played for
+  its bars, the ramp steps back down to `startBpm` in the same increments
+  and ends there (60 → 65 → 70 → 65 → 60 for a 60→70 ramp in steps of 5).
+  The turnaround happens inside the running native ramp, on the bar line,
+  with the same sample accuracy as every other step — the engine never
+  stops and restarts, so there is no gap or late click at the top.
+  `returnToStart` requires a `goalBpm`; combined with `holdAtGoal` the
+  metronome holds `startBpm` at the end of the return leg.
+- `TempoRamp.totalSteps`, `steps` and `bpmAt` cover both legs, and
+  `RampProgress.stepIndex` counts straight through the turnaround, so a
+  progress bar can show the whole arc. The goal step is counted once.
+
 ## 0.4.1 — Hold at goal
 
 - Added `TempoRamp.holdAtGoal`: the metronome keeps clicking at `goalBpm`
