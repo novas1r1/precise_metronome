@@ -283,11 +283,15 @@ class Metronome {
     await _channel.invokeMethod<void>('setTempo', {'bpm': bpm});
   }
 
-  /// Sets the time signature and resets the accent pattern to a sensible
-  /// default (accent on beat 1 only, all other beats unaccented).
+  /// Sets the time signature and resets any custom accent pattern to a
+  /// single accent.
   ///
-  /// To keep or customize the accent pattern, call [setAccentPattern]
-  /// after this.
+  /// [accentEnabled] and [accentBeat] survive the change: with accents
+  /// disabled the new bar stays even, and the accent keeps its beat as
+  /// long as that beat exists in the new bar (otherwise it falls back to
+  /// beat 1).
+  ///
+  /// To customize the accent pattern, call [setAccentPattern] after this.
   Future<void> setTimeSignature(TimeSignature signature) async {
     _assertReady();
     _timeSignature = signature;

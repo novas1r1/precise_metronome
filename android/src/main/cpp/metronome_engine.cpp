@@ -29,7 +29,7 @@ bool MetronomeEngine::initialize() {
     }
     // Build buffers before the audio callback can possibly fire.
     rebuild_buffers(static_cast<double>(sample_rate_));
-    for (int v = 0; v < 2; ++v) {
+    for (int v = 0; v < kVoiceCount; ++v) {
         buffers_current_[v] = buffers_next_[v];
     }
     buffers_pending_.store(false, std::memory_order_release);
@@ -91,8 +91,10 @@ void MetronomeEngine::close_stream() {
 }
 
 void MetronomeEngine::rebuild_buffers(double sample_rate) {
-    buffers_next_[0] = render_click_buffers(ClickVoice::Tone,  sample_rate);
-    buffers_next_[1] = render_click_buffers(ClickVoice::Click, sample_rate);
+    for (int v = 0; v < kVoiceCount; ++v) {
+        buffers_next_[v] =
+            render_click_buffers(static_cast<ClickVoice>(v), sample_rate);
+    }
     buffers_pending_.store(true, std::memory_order_release);
 }
 
@@ -172,7 +174,7 @@ void MetronomeEngine::set_subdivision(int pulses_per_beat) {
 }
 
 void MetronomeEngine::set_voice(int voice_index) {
-    if (voice_index < 0 || voice_index > 1) return;
+    if (voice_index < 0 || voice_index >= kVoiceCount) return;
     voice_index_.store(voice_index, std::memory_order_relaxed);
 }
 
@@ -212,7 +214,7 @@ void MetronomeEngine::onErrorAfterClose(oboe::AudioStream* /*stream*/,
     stream_.reset();
     if (open_stream()) {
         rebuild_buffers(static_cast<double>(sample_rate_));
-        for (int v = 0; v < 2; ++v) {
+        for (int v = 0; v < kVoiceCount; ++v) {
             buffers_current_[v] = buffers_next_[v];
         }
         buffers_pending_.store(false, std::memory_order_release);
@@ -286,7 +288,7 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
 
     // Adopt any pending newly-synthesized buffers between beats.
     if (buffers_pending_.load(std::memory_order_acquire)) {
-        for (int v = 0; v < 2; ++v) {
+        for (int v = 0; v < kVoiceCount; ++v) {
             buffers_current_[v] = buffers_next_[v];
         }
         buffers_pending_.store(false, std::memory_order_release);

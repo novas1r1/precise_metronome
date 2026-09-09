@@ -6,9 +6,14 @@
 namespace precise_metronome {
 
 enum class ClickVoice : int {
-    Tone  = 0,
-    Click = 1,
+    Tone       = 0,
+    Click      = 1,
+    Wood       = 2,
+    Mechanical = 3,
+    Blip       = 4,
 };
+
+constexpr int kVoiceCount = 5;
 
 // Renders accent + normal + sub click buffers for a voice at the given
 // sample rate. Buffers are mono Float32 and reproducibly synthesized

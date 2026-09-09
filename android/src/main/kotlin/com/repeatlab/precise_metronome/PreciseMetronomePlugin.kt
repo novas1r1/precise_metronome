@@ -250,10 +250,14 @@ class PreciseMetronomePlugin :
                     val idx = when (voice) {
                         "tone" -> 0
                         "click" -> 1
+                        "wood" -> 2
+                        "mechanical" -> 3
+                        "blip" -> 4
                         else -> {
                             result.error(
                                 "bad_arguments",
-                                "voice must be 'tone' or 'click'",
+                                "voice must be 'tone', 'click', 'wood', " +
+                                    "'mechanical', or 'blip'",
                                 null
                             )
                             return

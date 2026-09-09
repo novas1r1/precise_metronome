@@ -151,8 +151,8 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     // Pre-rendered buffers, double-buffered: we mutate buffers_next_ from the
     // Flutter thread and have the audio thread swap to it when reset_requested_
     // is seen. Keeps the audio thread allocation-free.
-    ClickBuffers buffers_current_[2];   // [voice_index]
-    ClickBuffers buffers_next_[2];
+    ClickBuffers buffers_current_[kVoiceCount];   // [voice_index]
+    ClickBuffers buffers_next_[kVoiceCount];
     std::atomic<bool> buffers_pending_{false};
 
     // Audio-thread-only state.

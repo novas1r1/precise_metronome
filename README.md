@@ -19,7 +19,7 @@ once at init. No per-beat allocations on the audio thread.
 - Time signatures with smart compound-meter defaults (6/8 → 2 beats, 9/8 → 3, 12/8 → 4)
 - Arbitrary accent patterns, per main beat or per subdivision pulse
 - Subdivisions (duple / triplet / quadruple) with softer sub-clicks between main beats — and accents that can land on a subdivision pulse
-- Two procedural click voices (no bundled audio assets)
+- Five procedural click voices — tone, click, wood, mechanical (with bell accent), soft blip — no bundled audio assets
 - Tempo range 20–400 BPM
 - Tap tempo
 - Beat events (`Metronome.beats`) for UI sync — beat indicators, bar counters — with optional subdivision pulses
@@ -45,8 +45,15 @@ await metronome.init();
 await metronome.setTempo(120);
 await metronome.setTimeSignature(TimeSignature(7, 8));
 await metronome.setAccentPattern([true, false, false, true, false, true, false]);
+
+// Or use the simple accent settings instead of a full pattern:
+await metronome.setAccentEnabled(false); // no accent — every beat sounds the same
+await metronome.setAccentBeat(2);        // single accent on beat 3 (0-based, re-enables)
 await metronome.setSubdivision(Subdivision.duple);   // eighth-note subdivisions
-await metronome.setVoice(MetronomeVoice.tone);
+// Voices: tone (electronic beep), click (sharp cut-through), wood (warm
+// wood block), mechanical (pendulum tick, bell on accents), blip (soft
+// marimba for quiet practice).
+await metronome.setVoice(MetronomeVoice.wood);
 await metronome.setVolume(0.8);
 
 await metronome.start();

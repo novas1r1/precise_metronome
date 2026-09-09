@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0 — Accents on subdivision pulses
+## 0.7.0 — Accents on subdivision pulses
 
 - `setAccentPattern` now also accepts a pattern with one flag per audible
   pulse (`timeSignature.beatsPerBar * subdivision.pulsesPerBeat`, indexed
@@ -28,6 +28,39 @@
 - `TempoRamp.totalSteps`, `steps` and `bpmAt` cover both legs, and
   `RampProgress.stepIndex` counts straight through the turnaround, so a
   progress bar can show the whole arc. The goal step is counted once.
+
+## 0.6.0 — Three new voices
+
+- Added three procedurally synthesized voices (still no bundled assets):
+  - `MetronomeVoice.wood` — warm, hollow wood (modal synthesis of a
+    struck wooden bar: three inharmonic decaying partials plus a short
+    stick-impact noise). 820 Hz fundamental, 1080 Hz on accents.
+  - `MetronomeVoice.mechanical` — classic pendulum-metronome tick
+    (broadband snap plus a low wooden-case resonance). Accents ring with
+    a bell-like partial, like the bell of an old mechanical metronome,
+    so they are unmistakable.
+  - `MetronomeVoice.blip` — soft marimba-like blip with a gentle attack
+    (C5, E5 on accents); the least fatiguing voice for quiet practice.
+- Voices are rendered identically on iOS and Android (same DSP, same
+  deterministic noise), as before.
+
+## 0.5.0 — Accent settings
+
+- Added `Metronome.setAccentEnabled(bool)`: with `false` every beat uses
+  the normal click, so the bar sounds completely even; `true` restores
+  the accent on the beat it was on before.
+- Added `Metronome.setAccentBeat(int)`: puts the single accent on any
+  beat of the bar (0-based, validated against `beatsPerBar` — 4 positions
+  in 4/4, 3 in 3/4, …) and re-enables a disabled accent.
+- Added the `accentEnabled` and `accentBeat` getters. Both stay in sync
+  with `setAccentPattern` (all-`false` disables, a single-accent pattern
+  moves `accentBeat`).
+- `setTimeSignature` now preserves the accent-enabled state and keeps the
+  accent on its beat when that beat still exists in the new bar (falling
+  back to beat 1 otherwise). Previously it always reset to an accent on
+  beat 1. Custom multi-accent patterns are still reset.
+- Example app: new "Accent" switch in the Accents section.
+- No native changes — both engines already play any accent pattern.
 
 ## 0.4.1 — Hold at goal
 
