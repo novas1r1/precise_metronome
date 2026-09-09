@@ -1,0 +1,9 @@
+@import url('https://fonts.googleapis.com/css2?family=Archivo:ital,wdth,wght@0,62..125,100..900;1,62..125,100..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+:root{
+--font-display:'Archivo',system-ui,sans-serif;--font-body:'Archivo',system-ui,sans-serif;--font-mono:'IBM Plex Mono',ui-monospace,monospace;
+--text-bpm:clamp(88px,18vw,168px);--text-display:56px;--text-h1:36px;--text-h2:26px;--text-h3:20px;--text-body:16px;--text-small:14px;--text-caption:12px;--text-label:11px;
+--leading-tight:0.92;--leading-snug:1.15;--leading-normal:1.5;
+--tracking-display:-0.04em;--tracking-tight:-0.02em;--tracking-label:0.14em;
+--weight-regular:400;--weight-medium:500;--weight-semibold:600;--weight-bold:700;--weight-black:800;
+--font-features-tabular:'tnum' 1,'lnum' 1;
+}

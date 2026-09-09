@@ -1,11 +1,11 @@
 name: precise_metronome_example
 description: Demonstrates precise_metronome.
 publish_to: none
-version: 0.1.0
+version: 1.0.0
 
 environment:
-  sdk: ">=3.0.0 <4.0.0"
-  flutter: ">=3.10.0"
+  sdk: ">=3.12.0 <4.0.0"
+  flutter: 3.44.8
 
 dependencies:
   flutter:
@@ -20,3 +20,18 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  fonts:
+    # Archivo ships as a single variable font (wdth, wght axes); weights are
+    # selected with FontVariation in AccelType, not with fontWeight.
+    - family: Archivo
+      fonts:
+        - asset: assets/fonts/Archivo-Variable.ttf
+    - family: IBMPlexMono
+      fonts:
+        - asset: assets/fonts/IBMPlexMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/IBMPlexMono-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/IBMPlexMono-SemiBold.ttf
+          weight: 600

@@ -1,0 +1,28 @@
+<!-- @dsCard group="Components" viewport="700x400" name="Core" subtitle="Buttons, steppers, switches, segmented, badges, dial" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css"><style>body{margin:0;padding:16px 20px;height:400px;box-sizing:border-box;overflow:hidden}.g{display:grid;grid-template-columns:1fr 1fr 220px;gap:14px 20px;align-items:start}.r{display:flex;gap:8px;align-items:center;flex-wrap:wrap}</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script></head><body><div id="root"></div>
+<script type="text/babel">
+const {Button,IconButton,Icon,Input,NumberField,Select,Switch,Segmented,Slider,Card,Badge,Toast,Tooltip,BeatRing,AccentGrid}=window.AccelDesignSystem_faf4ef;
+function App(){const [n,setN]=React.useState(4);const [b,setB]=React.useState(120);const [on,setOn]=React.useState(true);const [seg,setSeg]=React.useState('8');const [vol,setVol]=React.useState(70);const [beat,setBeat]=React.useState(0);const [acc,setAcc]=React.useState([0,4]);
+React.useEffect(()=>{const t=setInterval(()=>setBeat(x=>x+1),500);return()=>clearInterval(t)},[]);
+return <div className="g">
+<div style={{display:'flex',flexDirection:'column',gap:14}}>
+<div className="r"><Button glow>Start</Button><Button variant="secondary" icon={<Icon name="settings"/>}>Settings</Button><Button variant="ghost" size="sm">Reset</Button><Button variant="danger" size="sm">Stop</Button><Button disabled size="sm">Off</Button></div>
+<div className="r"><IconButton label="Play"><Icon name="play"/></IconButton><IconButton label="Repeat" active><Icon name="repeat"/></IconButton><IconButton label="Volume" variant="ghost"><Icon name="volume"/></IconButton><Tooltip label="Tap tempo"><IconButton label="Tap" size="sm"><Icon name="rotate-ccw" size={16}/></IconButton></Tooltip><Badge tone="accent" dot>+5 → 125</Badge><Badge tone="info">−5 → 115</Badge><Badge tone="positive">target 140</Badge><Badge>bar 3/4</Badge></div>
+<Segmented label="Subdivision" value={seg} onChange={setSeg} options={[{value:'4',label:'♩'},{value:'8',label:'♪'},{value:'3',label:'♪³'},{value:'16',label:'♬'}]}/>
+<Switch label="Ramp back down" description="Return in the same steps" checked={on} onChange={setOn}/>
+<AccentGrid label="Accents" beats={4} subdiv={2} accents={acc} onChange={setAcc} current={(beat*2)%8}/>
+</div>
+<div style={{display:'flex',flexDirection:'column',gap:14}}>
+<NumberField label="Start tempo" unit="BPM" value={b} min={20} max={300} size="lg" onChange={setB}/>
+<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}><NumberField label="Every" unit="bars" value={n} min={1} max={64} onChange={setN}/><Input label="Target" unit="BPM" defaultValue="140" type="number"/></div>
+<Select label="Time signature" value="4/4" options={[{value:'3/4',label:'3/4'},{value:'4/4',label:'4/4'},{value:'6/8',label:'6/8'},{value:'12/8',label:'12/8'}]} onChange={()=>{}}/>
+<Toast tone="positive" icon={<Icon name="check" size={18}/>}>Target reached — 140 BPM</Toast>
+</div>
+<Card title="Dial" padding={16} glow><div style={{display:'flex',justifyContent:'center'}}><BeatRing beat={beat} beatsPerBar={4} accent={beat%4===0} size={150}><span style={{font:'800 56px var(--font-display)',letterSpacing:'var(--tracking-display)',fontFeatureSettings:'var(--font-features-tabular)'}}>{b}</span></BeatRing></div></Card>
+</div>}
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script></body></html>
