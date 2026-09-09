@@ -2,7 +2,7 @@
 // shown on screen, and follows the native ramp/beat events.
 
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:precise_metronome_example/main.dart';
 import 'package:precise_metronome_example/widgets/accel_controls.dart';
@@ -237,6 +237,28 @@ void main() {
     final pattern = _lastAccentPattern(engine);
     expect(pattern.length, 4, reason: 'back to one cell per beat');
     expect(pattern, [true, false, false, false]);
+  });
+
+  testWidgets('the settings sheet offers every built-in voice', (tester) async {
+    final engine = _FakeEngine()..install(tester);
+    await tester.pumpWidget(const AccelApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.settings_rounded));
+    await tester.pumpAndSettle();
+
+    for (final label in ['Tone', 'Click', 'Wood', 'Mechanical', 'Blip']) {
+      expect(find.text(label), findsOneWidget, reason: '$label is missing');
+    }
+    expect(find.text('Volume'), findsNothing, reason: 'the label is uppercased');
+    expect(find.text('VOLUME'), findsOneWidget);
+
+    engine.calls.clear();
+    await tester.tap(find.text('Mechanical'));
+    await tester.pumpAndSettle();
+
+    final call = engine.calls.lastWhere((c) => c.method == 'setVoice');
+    expect((call.arguments as Map)['voice'], 'mechanical');
   });
 
   testWidgets('turning dynamic mode off starts a plain metronome', (

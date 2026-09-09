@@ -19,7 +19,7 @@ flutter run
 | The plan under the card (`60 → 65 → … → 120 → … → 60`) | `TempoRamp.steps` / `totalSteps` |
 | Time signature picker, accent grid | `setTimeSignature` / `setAccentPattern` |
 | Subdivision picker (♩ ♪♪ ♪³ ♬♬) | `setSubdivision` |
-| Settings sheet: volume, sound | `setVolume`, `setVoice` |
+| Settings sheet: volume, and all five click voices with a line of description each | `setVolume`, `setVoice` |
 
 Turning dynamic mode off starts a plain metronome (`start()`) at the tempo in
 the stepper, which is relabelled "Tempo" there.

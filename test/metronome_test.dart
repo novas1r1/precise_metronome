@@ -351,6 +351,51 @@ void main() {
     expect(sent.sublist(1), everyElement(false));
   });
 
+  test('accent controls work on the pulse grid', () async {
+    final m = Metronome();
+    await m.init();
+    await m.setSubdivision(Subdivision.triplet);
+    calls.clear();
+
+    await m.setAccentBeat(2);
+
+    // 4 beats x 3 pulses, the accent on beat 3's own pulse.
+    final sent = ((calls.lastWhere((c) => c.method == 'setAccentPattern')
+                .arguments
+            as Map)['accentPattern'] as List)
+        .cast<bool>();
+    expect(sent.length, 12);
+    expect(sent[6], isTrue);
+    expect(sent.where((a) => a).length, 1);
+
+    await m.setAccentEnabled(false);
+    expect(m.pulseAccents.length, 12);
+    expect(m.pulseAccents, everyElement(false));
+
+    await m.setAccentEnabled(true);
+    expect(m.accentBeat, 2);
+    expect(m.pulseAccents[6], isTrue);
+  });
+
+  test('a lone accent on a subdivision pulse leaves accentBeat alone',
+      () async {
+    final m = Metronome();
+    await m.init();
+    await m.setTimeSignature(TimeSignature(2, 4));
+    await m.setSubdivision(Subdivision.duple);
+    await m.setAccentBeat(1);
+
+    // One accent, but on an off-beat — not a single-accent beat pattern.
+    await m.setAccentPattern([false, false, false, true]);
+    expect(m.accentEnabled, isTrue);
+    expect(m.accentBeat, 1, reason: 'kept from the last main-beat accent');
+
+    // Turning accents off and on again restores the beat, not the off-beat.
+    await m.setAccentEnabled(false);
+    await m.setAccentEnabled(true);
+    expect(m.pulseAccents, [false, false, true, false]);
+  });
+
   test('setVolume validates range', () async {
     final m = Metronome();
     await m.init();

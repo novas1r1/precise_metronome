@@ -58,6 +58,8 @@ class Metronome {
   TimeSignature _timeSignature = TimeSignature(4, 4);
   /// One flag per pulse of the bar: `beat * pulsesPerBeat + pulse`.
   List<bool> _pulseAccents = const [true, false, false, false];
+  bool _accentEnabled = true;
+  int _accentBeat = 0;
   Subdivision _subdivision = Subdivision.none;
   MetronomeVoice _voice = MetronomeVoice.tone;
   double _volume = 0.8;
@@ -127,6 +129,20 @@ class Metronome {
   /// `beat * subdivision.pulsesPerBeat + pulse`. Length always equals
   /// `timeSignature.beatsPerBar * subdivision.pulsesPerBeat`.
   List<bool> get pulseAccents => List.unmodifiable(_pulseAccents);
+
+  /// Whether any pulse in the bar is accented.
+  ///
+  /// `false` means every beat uses the normal click, so the metronome
+  /// sounds completely even. See [setAccentEnabled].
+  bool get accentEnabled => _accentEnabled;
+
+  /// The beat the single accent sits on (0-based), as set by
+  /// [setAccentBeat] and restored by `setAccentEnabled(true)`.
+  ///
+  /// When a richer pattern has been set via [setAccentPattern] this keeps
+  /// its last single-accent value; it only tracks patterns whose one accent
+  /// sits on a main beat.
+  int get accentBeat => _accentBeat;
 
   /// Current subdivision. Each main beat is split into
   /// `subdivision.pulsesPerBeat` pulses; the first pulse of each beat
@@ -295,10 +311,8 @@ class Metronome {
   Future<void> setTimeSignature(TimeSignature signature) async {
     _assertReady();
     _timeSignature = signature;
-    _pulseAccents = List<bool>.generate(
-      signature.beatsPerBar * _subdivision.pulsesPerBeat,
-      (i) => i == 0,
-    );
+    if (_accentBeat >= signature.beatsPerBar) _accentBeat = 0;
+    _pulseAccents = _singleAccentPulses();
     await _channel.invokeMethod<void>('setTimeSignature', {
       'numerator': signature.numerator,
       'denominator': signature.denominator,
@@ -336,9 +350,75 @@ class Metronome {
         '(${beats * pulses}).',
       );
     }
+    _syncSingleAccent();
     await _channel.invokeMethod<void>('setAccentPattern', {
       'accentPattern': _pulseAccents,
     });
+  }
+
+  /// Enables or disables the accent.
+  ///
+  /// With [enabled] `false` every beat uses the normal click, so the bar
+  /// sounds completely even. With `true` the accent returns to the beat it
+  /// was on before (see [accentBeat]; beat 1 by default). Accents that a
+  /// richer [setAccentPattern] had placed elsewhere are not restored.
+  ///
+  /// Takes effect at the next pulse, like [setAccentPattern].
+  Future<void> setAccentEnabled(bool enabled) async {
+    _assertReady();
+    _accentEnabled = enabled;
+    _pulseAccents = _singleAccentPulses();
+    await _channel.invokeMethod<void>('setAccentPattern', {
+      'accentPattern': _pulseAccents,
+    });
+  }
+
+  /// Puts the single accent on [beatIndex] (0-based) and removes it from
+  /// every other pulse.
+  ///
+  /// [beatIndex] must be less than `timeSignature.beatsPerBar` — in 4/4
+  /// the valid positions are 0..3, in 3/4 they are 0..2. Calling this also
+  /// re-enables the accent if it was disabled.
+  ///
+  /// For more than one accent per bar, or an accent on a subdivision
+  /// pulse, use [setAccentPattern].
+  Future<void> setAccentBeat(int beatIndex) async {
+    _assertReady();
+    if (beatIndex < 0 || beatIndex >= _timeSignature.beatsPerBar) {
+      throw ArgumentError.value(
+        beatIndex,
+        'beatIndex',
+        'must be 0..${_timeSignature.beatsPerBar - 1} '
+            '(timeSignature.beatsPerBar is ${_timeSignature.beatsPerBar})',
+      );
+    }
+    _accentBeat = beatIndex;
+    _accentEnabled = true;
+    _pulseAccents = _singleAccentPulses();
+    await _channel.invokeMethod<void>('setAccentPattern', {
+      'accentPattern': _pulseAccents,
+    });
+  }
+
+  /// The pulse grid for the current single-accent state: one accent on
+  /// [accentBeat]'s own pulse, or nothing at all when disabled.
+  List<bool> _singleAccentPulses() {
+    final pulses = _subdivision.pulsesPerBeat;
+    return List<bool>.generate(
+      _timeSignature.beatsPerBar * pulses,
+      (i) => _accentEnabled && i == _accentBeat * pulses,
+    );
+  }
+
+  /// Keeps [accentEnabled] and [accentBeat] in step with the pattern that
+  /// was just set. A lone accent on a main beat moves [accentBeat]; a lone
+  /// accent on a subdivision pulse, or several accents, leave it alone.
+  void _syncSingleAccent() {
+    _accentEnabled = _pulseAccents.contains(true);
+    if (_pulseAccents.where((a) => a).length != 1) return;
+    final slot = _pulseAccents.indexOf(true);
+    final pulses = _subdivision.pulsesPerBeat;
+    if (slot % pulses == 0) _accentBeat = slot ~/ pulses;
   }
 
   /// Spreads one flag per beat over [pulsesPerBeat] pulses: the beat's own

@@ -52,10 +52,7 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
   void _onChanged() {
     if (_metronome.notice != null) {
       _noticeTimer?.cancel();
-      _noticeTimer = Timer(
-        const Duration(milliseconds: 2600),
-        _metronome.clearNotice,
-      );
+      _noticeTimer = Timer(const Duration(milliseconds: 2600), _metronome.clearNotice);
     }
     setState(() {});
   }
@@ -106,14 +103,7 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
       child: Row(
         children: [
-          Text(
-            'Accel',
-            style: AccelType.display(
-              size: 22,
-              weight: 800,
-              letterSpacing: -0.05 * 22,
-            ),
-          ),
+          Text('Accel', style: AccelType.display(size: 22, weight: 800, letterSpacing: -0.05 * 22)),
           const Spacer(),
           if (m.dynamicMode) ...[
             AccelBadge(
@@ -141,7 +131,7 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
 
     final beat = m.lastBeat;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 132),
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 164),
       children: [
         Center(
           child: Padding(
@@ -158,10 +148,7 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
             ),
           ),
         ),
-        if (m.dynamicMode) ...[
-          const SizedBox(height: 8),
-          _stepProgress(m, descending),
-        ],
+        if (m.dynamicMode) ...[const SizedBox(height: 8), _stepProgress(m, descending)],
         const SizedBox(height: 16),
         Row(
           crossAxisAlignment: CrossAxisAlignment.end,
@@ -170,11 +157,7 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
               child: AccelSelect<TimeSignature>(
                 label: 'Time signature',
                 value: m.signature,
-                valueStyle: AccelType.display(
-                  size: 24,
-                  weight: 600,
-                  tabularFigures: true,
-                ),
+                valueStyle: AccelType.display(size: 24, weight: 600, tabularFigures: true),
                 options: [
                   for (final s in _signatures)
                     AccelSegmentedOption(s, '${s.numerator}/${s.denominator}'),
@@ -207,6 +190,8 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
           currentSlot: m.currentSlot,
           onChanged: m.setAccent,
         ),
+        const SizedBox(height: 16),
+        _tempoCard(m),
         const SizedBox(height: 16),
         _dynamicCard(m),
       ],
@@ -242,18 +227,11 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
         const SizedBox(height: 2),
         Text(
           'BPM',
-          style: AccelType.mono(
-            size: 11,
-            letterSpacing: 0.14 * 11,
-            color: AccelColors.textMuted,
-          ),
+          style: AccelType.mono(size: 11, letterSpacing: 0.14 * 11, color: AccelColors.textMuted),
         ),
         if (m.isPlaying && m.dynamicMode && bar != null) ...[
           const SizedBox(height: 6),
-          Text(
-            'bar ${bar + 1} / ${m.barsPerStep}',
-            style: AccelType.mono(size: 12),
-          ),
+          Text('bar ${bar + 1} / ${m.barsPerStep}', style: AccelType.mono(size: 12)),
         ],
       ],
     );
@@ -266,9 +244,25 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
         value: m.stepProgress,
         minHeight: 3,
         backgroundColor: AccelColors.surfaceGlassStrong,
-        valueColor: AlwaysStoppedAnimation(
-          descending ? AccelColors.info : AccelColors.accent,
-        ),
+        valueColor: AlwaysStoppedAnimation(descending ? AccelColors.info : AccelColors.accent),
+      ),
+    );
+  }
+
+  /// The metronome's tempo — its own card, above the dynamic-mode box.
+  /// It is the tempo the metronome plays at, and the tempo a ramp starts
+  /// from, so it stays visible whether dynamic mode is on or off.
+  Widget _tempoCard(AccelMetronome m) {
+    return AccelCard(
+      padding: const EdgeInsets.all(16),
+      child: AccelNumberField(
+        label: m.dynamicMode ? 'Start tempo' : 'Tempo',
+        unit: 'BPM',
+        value: m.startBpm,
+        min: 20,
+        max: 400,
+        large: true,
+        onChanged: m.setTempo,
       ),
     );
   }
@@ -280,86 +274,57 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
     return AccelCard(
       title: 'Dynamic mode',
       glow: on && m.isPlaying,
+      // Off, the card collapses to its title row and switch.
+      expanded: on,
       action: AccelSwitch(value: on, onChanged: m.setDynamicMode),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // The tempo field stays live when dynamic mode is off — it is the
-          // app's only tempo control, so it doubles as "Tempo" there.
-          AccelNumberField(
-            label: on ? 'Start tempo' : 'Tempo',
-            unit: 'BPM',
-            value: m.startBpm,
-            min: 20,
-            max: 400,
-            large: true,
-            onChanged: m.setTempo,
-          ),
-          AnimatedOpacity(
-            opacity: on ? 1 : 0.45,
-            duration: AccelMotion.base,
-            child: IgnorePointer(
-              ignoring: !on,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const SizedBox(height: 14),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: AccelNumberField(
-                          label: 'Bar count',
-                          value: m.barsPerStep.toDouble(),
-                          min: 1,
-                          max: 64,
-                          onChanged: (v) => m.setBarsPerStep(v.round()),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: AccelNumberField(
-                          label: 'Increase by BPM',
-                          value: m.stepBpm,
-                          min: 1,
-                          max: 50,
-                          onChanged: m.setStepBpm,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 14),
-                  AccelSwitch(
-                    label: 'Stop at target',
-                    value: m.useTarget,
-                    onChanged: m.setUseTarget,
-                  ),
-                  if (m.useTarget) ...[
-                    const SizedBox(height: 14),
-                    AccelNumberField(
-                      label: 'Target tempo',
-                      unit: 'BPM',
-                      value: m.targetBpm,
-                      min: 20,
-                      max: 400,
-                      step: 5,
-                      onChanged: m.setTargetBpm,
-                    ),
-                  ],
-                  const SizedBox(height: 14),
-                  AccelSwitch(
-                    label: 'Ramp back down',
-                    description: 'Step back to the start tempo at the top',
-                    value: m.returnToStart && m.useTarget,
-                    onChanged: m.useTarget ? m.setReturnToStart : null,
-                  ),
-                  if (ramp != null) ...[
-                    const SizedBox(height: 16),
-                    _rampPlan(ramp),
-                  ],
-                ],
+          Row(
+            children: [
+              Expanded(
+                child: AccelNumberField(
+                  label: 'Bar count',
+                  value: m.barsPerStep.toDouble(),
+                  min: 1,
+                  max: 64,
+                  onChanged: (v) => m.setBarsPerStep(v.round()),
+                ),
               ),
-            ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: AccelNumberField(
+                  label: 'Increase by BPM',
+                  value: m.stepBpm,
+                  min: 1,
+                  max: 50,
+                  onChanged: m.setStepBpm,
+                ),
+              ),
+            ],
           ),
+          const SizedBox(height: 14),
+          AccelSwitch(label: 'Stop at target', value: m.useTarget, onChanged: m.setUseTarget),
+          if (m.useTarget) ...[
+            const SizedBox(height: 14),
+            AccelNumberField(
+              label: 'Target tempo',
+              unit: 'BPM',
+              value: m.targetBpm,
+              min: 20,
+              max: 400,
+              step: 5,
+              onChanged: m.setTargetBpm,
+            ),
+          ],
+          const SizedBox(height: 14),
+          AccelSwitch(
+            label: 'Ramp back down',
+            description: 'Step back to the start tempo at the top',
+            value: m.returnToStart && m.useTarget,
+            onChanged: m.useTarget ? m.setReturnToStart : null,
+          ),
+          if (ramp != null) ...[const SizedBox(height: 16), _rampPlan(ramp)],
         ],
       ),
     );
@@ -388,10 +353,7 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
       text = '$shown  ·  ${ramp.totalSteps} steps  ·  $bars bars';
     }
 
-    return Text(
-      text,
-      style: AccelType.mono(size: 12, color: AccelColors.textMuted),
-    );
+    return Text(text, style: AccelType.mono(size: 12, color: AccelColors.textMuted));
   }
 
   Widget _transport(AccelMetronome m) {
@@ -429,9 +391,7 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
                     Expanded(
                       child: AccelButton(
                         label: m.isPlaying ? 'Stop' : 'Start',
-                        icon: m.isPlaying
-                            ? Icons.pause_rounded
-                            : Icons.play_arrow_rounded,
+                        icon: m.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
                         size: AccelButtonSize.xl,
                         fullWidth: true,
                         glow: !m.isPlaying,
@@ -457,10 +417,7 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text(
-            'The audio engine did not start',
-            style: AccelType.display(size: 20, weight: 600),
-          ),
+          Text('The audio engine did not start', style: AccelType.display(size: 20, weight: 600)),
           const SizedBox(height: 8),
           Text(
             '$error',
@@ -491,21 +448,11 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
               onChanged: m.setVolume,
             ),
             const SizedBox(height: 20),
-            AccelSegmented<MetronomeVoice>(
+            AccelChoiceList<MetronomeVoice>(
               label: 'Sound',
               value: m.voice,
-              options: const [
-                AccelSegmentedOption(MetronomeVoice.tone, 'Tone'),
-                AccelSegmentedOption(MetronomeVoice.click, 'Click'),
-              ],
+              choices: _voices,
               onChanged: m.setVoice,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              m.voice == MetronomeVoice.tone
-                  ? 'A pitched blip — carries over a loud room.'
-                  : 'A dry wooden click — closer to a studio metronome.',
-              style: AccelType.mono(size: 12, color: AccelColors.textMuted),
             ),
             const SizedBox(height: 24),
             AccelButton(
@@ -519,9 +466,38 @@ class _MetronomeScreenState extends State<MetronomeScreen> {
     );
   }
 
-  static String _bpm(double value) => value == value.roundToDouble()
-      ? value.round().toString()
-      : value.toStringAsFixed(1);
+  /// The built-in voices, in the order they were added to the package.
+  /// Descriptions are one line each — enough to pick without auditioning.
+  static const List<AccelChoice<MetronomeVoice>> _voices = [
+    AccelChoice(
+      MetronomeVoice.tone,
+      'Tone',
+      description: 'A pitched electronic burst. Carries over a loud room.',
+    ),
+    AccelChoice(
+      MetronomeVoice.click,
+      'Click',
+      description: 'A sharp rim click. Cuts through busy practice audio.',
+    ),
+    AccelChoice(
+      MetronomeVoice.wood,
+      'Wood',
+      description: 'A warm, hollow wooden bar. Rounder and darker.',
+    ),
+    AccelChoice(
+      MetronomeVoice.mechanical,
+      'Mechanical',
+      description: 'A pendulum tick, with a bell on the accent.',
+    ),
+    AccelChoice(
+      MetronomeVoice.blip,
+      'Blip',
+      description: 'A soft marimba blip. The least tiring over long sessions.',
+    ),
+  ];
+
+  static String _bpm(double value) =>
+      value == value.roundToDouble() ? value.round().toString() : value.toStringAsFixed(1);
 }
 
 /// Flat navy with one large radial coral glow behind the dial, switching to

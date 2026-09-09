@@ -14,6 +14,7 @@ class AccelCard extends StatelessWidget {
     this.title,
     this.action,
     this.glow = false,
+    this.expanded = true,
     this.padding = const EdgeInsets.all(20),
   });
 
@@ -21,6 +22,10 @@ class AccelCard extends StatelessWidget {
   final String? title;
   final Widget? action;
   final bool glow;
+
+  /// When false, only the title row stays — the body collapses away with an
+  /// animation. Cards with no title ignore it: there would be nothing left.
+  final bool expanded;
   final EdgeInsets padding;
 
   @override
@@ -57,6 +62,7 @@ class AccelCard extends StatelessWidget {
   }
 
   Widget _surface(BuildContext context) {
+    final hasHeader = title != null || action != null;
     return ClipRRect(
       borderRadius: AccelRadius.lgAll,
       child: BackdropFilter(
@@ -71,29 +77,35 @@ class AccelCard extends StatelessWidget {
             border: Border.all(color: AccelColors.surfaceGlassBorder),
             boxShadow: AccelShadow.glass,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (title != null || action != null) ...[
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        title ?? '',
-                        style: AccelType.display(
-                          size: 20,
-                          weight: 600,
-                          letterSpacing: -0.02 * 20,
+          child: AnimatedSize(
+            duration: AccelMotion.base,
+            curve: AccelMotion.easeOut,
+            alignment: Alignment.topCenter,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (hasHeader)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          title ?? '',
+                          style: AccelType.display(
+                            size: 20,
+                            weight: 600,
+                            letterSpacing: -0.02 * 20,
+                          ),
                         ),
                       ),
-                    ),
-                    if (action != null) action!,
-                  ],
-                ),
-                const SizedBox(height: 16),
+                      if (action != null) action!,
+                    ],
+                  ),
+                if (expanded || !hasHeader) ...[
+                  if (hasHeader) const SizedBox(height: 16),
+                  child,
+                ],
               ],
-              child,
-            ],
+            ),
           ),
         ),
       ),
@@ -112,9 +124,7 @@ class _OutsideRoundedRect extends CustomClipper<Path> {
       ..addRect(
         Rect.fromLTRB(-bleed, -bleed, size.width + bleed, size.height + bleed),
       )
-      ..addRRect(
-        RRect.fromRectAndRadius(Offset.zero & size, AccelRadius.lg),
-      );
+      ..addRRect(RRect.fromRectAndRadius(Offset.zero & size, AccelRadius.lg));
   }
 
   @override
@@ -204,9 +214,7 @@ class AccelSheet extends StatelessWidget {
           topLeft: AccelRadius.xl,
           topRight: AccelRadius.xl,
         ),
-        border: Border(
-          top: BorderSide(color: AccelColors.borderStrong),
-        ),
+        border: Border(top: BorderSide(color: AccelColors.borderStrong)),
         boxShadow: AccelShadow.float,
       ),
       child: SafeArea(
@@ -237,7 +245,14 @@ class AccelSheet extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 16),
-            child,
+            // A tall sheet (the sound list, say) scrolls rather than
+            // overflowing on a short screen; a short one still hugs its
+            // content, because Flexible only caps the height.
+            Flexible(
+              child: SingleChildScrollView(
+                child: child,
+              ),
+            ),
           ],
         ),
       ),

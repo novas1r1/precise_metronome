@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 — Accents on subdivision pulses
+## 0.7.0 — Round-trip ramps and accents on subdivision pulses
 
 - `setAccentPattern` now also accepts a pattern with one flag per audible
   pulse (`timeSignature.beatsPerBar * subdivision.pulsesPerBeat`, indexed
@@ -14,8 +14,10 @@
 - `BeatEvent.accent` is now `true` for an accented subdivision pulse.
 - Both engines index the pattern per pulse; the native maximum grew from 32
   beats to 128 pulses per bar.
-
-## 0.5.0 — Ramp back down
+- `setAccentEnabled` and `setAccentBeat` (0.5.0) now write onto the pulse
+  grid too. `accentBeat` tracks a lone accent only while it sits on a main
+  beat: a single accent placed on a subdivision pulse leaves it untouched,
+  so switching accents off and on again restores the beat, not the off-beat.
 
 - Added `TempoRamp.returnToStart`: after the goal tempo has been played for
   its bars, the ramp steps back down to `startBpm` in the same increments

@@ -476,6 +476,129 @@ class AccelSegmented<T> extends StatelessWidget {
   }
 }
 
+// ------------------------------------------------------------ choice list
+
+class AccelChoice<T> {
+  const AccelChoice(this.value, this.label, {this.description});
+
+  final T value;
+  final String label;
+  final String? description;
+}
+
+/// A vertical list of choices, one row each, with the selected row in coral.
+///
+/// Where [AccelSegmented] runs out of room — more than a handful of options,
+/// or options that need a line of explanation — this takes over. The rows
+/// borrow their treatment from the dropdown's options so the two read as the
+/// same control in different clothes.
+class AccelChoiceList<T> extends StatelessWidget {
+  const AccelChoiceList({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.choices,
+    required this.onChanged,
+  });
+
+  final String label;
+  final T value;
+  final List<AccelChoice<T>> choices;
+  final ValueChanged<T> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AccelLabel(label),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: AccelColors.surfaceInput,
+            borderRadius: AccelRadius.mdAll,
+            border: Border.all(color: AccelColors.surfaceGlassBorder),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (final choice in choices) ...[
+                if (choice != choices.first) const SizedBox(height: 2),
+                _ChoiceRow<T>(
+                  choice: choice,
+                  selected: choice.value == value,
+                  onTap: () => onChanged(choice.value),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ChoiceRow<T> extends StatelessWidget {
+  const _ChoiceRow({required this.choice, required this.selected, required this.onTap});
+
+  final AccelChoice<T> choice;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: choice.label,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: AccelMotion.fast,
+          curve: AccelMotion.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: selected ? AccelColors.accentSoft : Colors.transparent,
+            borderRadius: AccelRadius.smAll,
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      choice.label,
+                      style: AccelType.display(
+                        size: 15,
+                        weight: 500,
+                        color: selected ? AccelColors.coral300 : AccelColors.textPrimary,
+                      ),
+                    ),
+                    if (choice.description != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        choice.description!,
+                        style: AccelType.mono(size: 12, color: AccelColors.textMuted),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (selected) ...[
+                const SizedBox(width: 10),
+                const Icon(Icons.check_rounded, size: 16, color: AccelColors.coral300),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // ----------------------------------------------------------------- slider
 
 class AccelSlider extends StatelessWidget {
