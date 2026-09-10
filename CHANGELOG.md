@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.0 — Timed ramp steps
+
+- A `TempoRamp` step can now be a stretch of time instead of a bar count.
+  `barsPerStep` is replaced by `stepLength`, a `RampStepLength`:
+  `RampStepLength.bars(4)` or `RampStepLength.time(Duration(seconds: 30))`.
+  The tempo still only changes on a bar line: a timed step is held until
+  its duration has elapsed and then ends at the next downbeat (30 s at
+  100 BPM in 4/4 plays 13 bars). Works with `holdAtGoal`, `returnToStart`
+  and open-ended ramps alike.
+- Both native engines count the step time in audio frames from the
+  downbeat that opened the step, so it is sample-accurate and unaffected
+  by Dart, background playback or nudges. New `stepMs` argument on the
+  `startRamp` method call (0 for bar-counted steps).
+- Added `TempoRamp.barsAt`, `totalBars` and `totalDuration`, and
+  `RampStepLength.barsAt` / `durationAt`, to predict how many bars and how
+  long a ramp plays for a given time signature.
+- Example app: "Hold each tempo for" switches between bars and time, with
+  quick picks (15 s – 5 min) and a typed `m:ss` field (5 s – 30 min). The
+  dial counts the step down, and the plan line now shows the total time.
+- **Breaking:** `TempoRamp(barsPerStep: n)` becomes
+  `TempoRamp(stepLength: RampStepLength.bars(n))`.
+
 ## 0.7.0 — Round-trip ramps and accents on subdivision pulses
 
 - `setAccentPattern` now also accepts a pattern with one flag per audible

@@ -86,9 +86,53 @@ void main() {
     // Defaults: 60 → 120 in steps of 5, ramping back down again. The plan
     // comes straight from TempoRamp.steps, elided around the turnaround.
     expect(
-      find.text('60 → 65 → … → 120 → … → 60  ·  25 steps  ·  100 bars'),
+      find.text(
+        '60 → 65 → … → 120 → … → 60  ·  25 steps  ·  100 bars  ·  ~4:42',
+      ),
       findsOneWidget,
     );
+  });
+
+  testWidgets('timed steps send stepMs and count down on the dial', (
+    tester,
+  ) async {
+    final engine = _FakeEngine()..install(tester);
+    await tester.pumpWidget(const AccelApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Time'));
+    await tester.pumpAndSettle();
+    // One minute per step by default. Each step is rounded up to whole
+    // bars at its own tempo, so the plan's bar count grows with the tempo.
+    expect(find.text('1:00'), findsOneWidget);
+    expect(
+      find.textContaining('25 steps  ·  564 bars  ·  ~25:25'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('30s'));
+    await tester.pumpAndSettle();
+    expect(find.text('0:30'), findsOneWidget);
+
+    engine.calls.clear();
+    await tester.tap(find.text('Start'));
+    // Not pumpAndSettle: the countdown ticks once a second while playing.
+    await tester.pump();
+
+    final args =
+        engine.calls.firstWhere((c) => c.method == 'startRamp').arguments
+            as Map;
+    expect(args['stepMs'], 30000);
+    expect(args['barsPerStep'], 0);
+
+    engine.beats!.success({'bar': 0, 'beat': 0, 'pulse': 0, 'accent': true});
+    await tester.pump();
+    expect(find.textContaining(' left'), findsOneWidget);
+    expect(find.textContaining('bar 1 /'), findsNothing);
+
+    await tester.tap(find.text('Stop'));
+    await tester.pump();
+    expect(find.textContaining(' left'), findsNothing);
   });
 
   testWidgets('Start sends a returnToStart ramp and follows it', (

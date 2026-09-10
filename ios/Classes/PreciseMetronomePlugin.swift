@@ -85,7 +85,12 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
                 result(argError("startBpm, goalBpm, stepBpm: Double, stopAtGoal: Bool, barsPerStep: Int")); return
             }
             let initialDelayMs = args["initialDelayMs"] as? Int ?? 0
+            // A timed step: the step length in ms, 0 for bars.
+            let stepMs = args["stepMs"] as? Int ?? 0
             let returnToStart = args["returnToStart"] as? Bool ?? false
+            guard barsPerStep >= 1 || stepMs >= 1 else {
+                result(argError("barsPerStep >= 1 or stepMs >= 1")); return
+            }
             requireEngine(result)?.startRamp(
                 initialDelaySeconds: Double(initialDelayMs) / 1000.0,
                 startBpm: startBpm,
@@ -93,6 +98,7 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
                 stopAtGoal: stopAtGoal,
                 stepBpm: stepBpm,
                 barsPerStep: barsPerStep,
+                stepSeconds: Double(stepMs) / 1000.0,
                 returnToStart: returnToStart)
             result(nil)
 

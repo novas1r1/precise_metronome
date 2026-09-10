@@ -23,7 +23,7 @@ once at init. No per-beat allocations on the audio thread.
 - Tempo range 20–400 BPM
 - Tap tempo
 - Beat events (`Metronome.beats`) for UI sync — beat indicators, bar counters — with optional subdivision pulses
-- Tempo ramps ("speed trainer"): step from a start to a goal BPM every N bars, exactly on the bar line — optionally back down to the start in one uninterrupted ramp
+- Tempo ramps ("speed trainer"): step from a start to a goal BPM every N bars or every N seconds, always exactly on the bar line — optionally back down to the start in one uninterrupted ramp
 - Optional background playback (iOS audio session + Android foreground service)
 - Mixes with other audio by default — practice over backing tracks
 
@@ -144,7 +144,7 @@ final ramp = TempoRamp(
   startBpm: 80,
   goalBpm: 120,
   stepBpm: 5,        // 80, 85, 90, ... 120 (last step is clamped to the goal)
-  barsPerStep: 4,    // hold each tempo for 4 bars
+  stepLength: RampStepLength.bars(4),  // hold each tempo for 4 bars
 );
 
 final sub = metronome.rampProgress.listen((p) {
@@ -156,6 +156,23 @@ await metronome.startRamp(ramp);
 // ... call metronome.stop() to abort early.
 ```
 
+A step can also be a stretch of time instead of a bar count. The tempo
+still only changes on a bar line: a timed step is held until its duration
+has elapsed and then ends at the next downbeat, so 30 s at 100 BPM in 4/4
+plays 13 bars. The time is counted natively in audio frames, not with a
+wall clock, so it is as exact as the clicks themselves.
+
+```dart
+await metronome.startRamp(TempoRamp(
+  startBpm: 80, goalBpm: 120, stepBpm: 5,
+  stepLength: RampStepLength.time(const Duration(seconds: 30)),
+));
+```
+
+`ramp.barsAt(step, beatsPerBar: 4)`, `ramp.totalBars(...)` and
+`ramp.totalDuration(...)` tell you up front how many bars and how much time
+a ramp will take, for either kind of step.
+
 Pass `holdAtGoal: true` to keep clicking at the goal tempo instead of
 stopping — handy when the musician has just reached target tempo and wants
 to keep playing. `RampProgress.isLastStep` tells you the goal step is on;
@@ -163,20 +180,20 @@ no `finished` event follows, end it with `stop()`.
 
 ```dart
 await metronome.startRamp(TempoRamp(
-  startBpm: 80, goalBpm: 120, stepBpm: 5, barsPerStep: 4,
+  startBpm: 80, goalBpm: 120, stepBpm: 5, stepLength: RampStepLength.bars(4),
   holdAtGoal: true,
 ));
 ```
 
 Pass `returnToStart: true` to walk back down again: once the goal has had
-its bars, the tempo steps back to `startBpm` in the same increments and the
+its step, the tempo steps back to `startBpm` in the same increments and the
 ramp ends there. The turnaround happens inside the running native ramp — the
 metronome does not stop and restart — so it lands on the bar line with the
 same sample accuracy as every other step.
 
 ```dart
 await metronome.startRamp(TempoRamp(
-  startBpm: 60, goalBpm: 70, stepBpm: 5, barsPerStep: 4,
+  startBpm: 60, goalBpm: 70, stepBpm: 5, stepLength: RampStepLength.bars(4),
   returnToStart: true,
 ));
 // 60 → 65 → 70 → 65 → 60, four bars each, then stops.
@@ -192,7 +209,7 @@ Leave out `goalBpm` for an open-ended ramp: the tempo keeps climbing by
 call `stop()` — `RampProgress.totalSteps` is `null` in that case.
 
 ```dart
-await metronome.startRamp(TempoRamp(startBpm: 90, stepBpm: 4, barsPerStep: 8));
+await metronome.startRamp(TempoRamp(startBpm: 90, stepBpm: 4, stepLength: RampStepLength.bars(8)));
 ```
 
 ### Background playback (optional)

@@ -24,6 +24,7 @@ internal object NativeBridge {
         stopAtGoal: Boolean,
         stepBpm: Double,
         barsPerStep: Int,
+        stepMs: Long,
         returnToStart: Boolean
     )
     /** Returns [stepIndex, bpm, finished (0/1)] of the running ramp. */

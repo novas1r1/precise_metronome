@@ -3,9 +3,15 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:precise_metronome/precise_metronome.dart';
 
+import 'formatting.dart';
+
 /// How the tempo is moving right now — drives the ring, dot and glow color
 /// (coral climbing, sky blue on the way back down).
 enum TempoDirection { up, down }
+
+/// How long each ramp step is held: a number of bars, or a stretch of
+/// time that ends at the next bar line.
+enum StepMode { bars, time }
 
 /// The screen's state, and the only place that talks to [Metronome].
 ///
@@ -30,6 +36,7 @@ class AccelMetronome extends ChangeNotifier {
   double _startBpm = 60;
   double? _liveBpm;
   TimeSignature _signature = TimeSignature(4, 4);
+
   /// One flag per audible pulse of the bar, indexed
   /// `beat * subdivision.pulsesPerBeat + pulse`.
   List<bool> _pulseAccents = [true, false, false, false];
@@ -37,13 +44,44 @@ class AccelMetronome extends ChangeNotifier {
   MetronomeVoice _voice = MetronomeVoice.tone;
   double _volume = 0.8;
 
-  // Dynamic mode (the ramp).
+  // Dynamic mode (the ramp). Both step lengths are kept so switching the
+  // mode back and forth does not lose either setting.
   bool _dynamic = true;
+  StepMode _stepMode = StepMode.bars;
   int _barsPerStep = 4;
+  Duration _stepDuration = const Duration(minutes: 1);
   double _stepBpm = 5;
   bool _useTarget = true;
   double _targetBpm = 120;
   bool _returnToStart = true;
+
+  /// The tempo range the UI allows, for both the start and target tempo.
+  static const double minBpm = 20;
+  static const double maxBpm = 400;
+
+  /// How much a ramp step may change the tempo by.
+  static const double minStepBpm = 1;
+  static const double maxStepBpm = 50;
+
+  /// How many bars a ramp step may be held for.
+  static const int minBarsPerStep = 1;
+  static const int maxBarsPerStep = 64;
+
+  /// Shortest and longest timed step the UI allows.
+  static const Duration minStepDuration = Duration(seconds: 5);
+  static const Duration maxStepDuration = Duration(minutes: 30);
+
+  /// How long a transient [notice] stays up before it clears itself.
+  static const Duration noticeDuration = Duration(milliseconds: 2600);
+
+  /// The quick picks offered next to the time field.
+  static const List<Duration> stepDurationPresets = [
+    Duration(seconds: 15),
+    Duration(seconds: 30),
+    Duration(minutes: 1),
+    Duration(minutes: 2),
+    Duration(minutes: 5),
+  ];
 
   // Live feedback.
   BeatEvent? _lastBeat;
@@ -52,6 +90,11 @@ class AccelMetronome extends ChangeNotifier {
   RampProgress? _progress;
   TempoDirection _direction = TempoDirection.up;
   String? _notice;
+  Timer? _noticeTimer;
+  // When the current timed step began (as seen from Dart) and the ticker
+  // that keeps its countdown moving between beats.
+  DateTime? _stepStartedAt;
+  Timer? _clock;
 
   // ------------------------------------------------------------- getters
 
@@ -67,6 +110,7 @@ class AccelMetronome extends ChangeNotifier {
   double get startBpm => _startBpm;
   TimeSignature get signature => _signature;
   int get beatsPerBar => _signature.beatsPerBar;
+
   /// One flag per audible pulse of the bar — the accent grid's cells.
   List<bool> get accents => List.unmodifiable(_pulseAccents);
   Subdivision get subdivision => _subdivision;
@@ -75,7 +119,16 @@ class AccelMetronome extends ChangeNotifier {
   double get volume => _volume;
 
   bool get dynamicMode => _dynamic;
+  StepMode get stepMode => _stepMode;
   int get barsPerStep => _barsPerStep;
+  Duration get stepDuration => _stepDuration;
+
+  /// The step length the current mode describes.
+  RampStepLength get stepLength => switch (_stepMode) {
+    StepMode.bars => RampStepLength.bars(_barsPerStep),
+    StepMode.time => RampStepLength.time(_stepDuration),
+  };
+
   double get stepBpm => _stepBpm;
   bool get useTarget => _useTarget;
   double get targetBpm => _targetBpm;
@@ -98,21 +151,47 @@ class AccelMetronome extends ChangeNotifier {
   /// when two consecutive beats carry the same index.
   int get beatTick => _beatTick;
 
-  /// A short transient message ("Back at 60 BPM"), or `null`.
+  /// A short transient message ("Back at 60 BPM"), or `null`. It clears
+  /// itself after [noticeDuration].
   String? get notice => _notice;
 
-  /// Bar within the current ramp step, 0-based. `null` when not running.
+  /// Bar within the current ramp step, 0-based. `null` when no ramp is
+  /// running or when steps are timed — a timed step has no fixed bar count.
   int? get barInStep {
     final beat = _lastBeat;
-    if (!_playing || beat == null) return null;
+    if (!_playing || !_dynamic || _stepMode != StepMode.bars || beat == null) {
+      return null;
+    }
     return beat.barIndex % _barsPerStep;
+  }
+
+  /// Time left in the current timed step, or `null` when not running or
+  /// when steps count bars. [Duration.zero] once the time is up and the
+  /// ramp is waiting for the next bar line.
+  Duration? get stepTimeLeft {
+    final started = _stepStartedAt;
+    if (!_playing ||
+        !_dynamic ||
+        _stepMode != StepMode.time ||
+        started == null) {
+      return null;
+    }
+    final left = _stepDuration - DateTime.now().difference(started);
+    return left.isNegative ? Duration.zero : left;
   }
 
   /// How far the current ramp step has progressed, 0..1, for the thin
   /// progress line under the dial.
   double get stepProgress {
+    if (!_playing || !_dynamic) return 0;
+    if (_stepMode == StepMode.time) {
+      final started = _stepStartedAt;
+      if (started == null) return 0;
+      final elapsed = DateTime.now().difference(started).inMilliseconds;
+      return (elapsed / _stepDuration.inMilliseconds).clamp(0.0, 1.0);
+    }
     final beat = _lastBeat;
-    if (!_playing || !_dynamic || beat == null) return 0;
+    if (beat == null) return 0;
     final bars = beat.barIndex % _barsPerStep;
     final within = (beat.beatIndex + 1) / beatsPerBar;
     return ((bars + within) / _barsPerStep).clamp(0.0, 1.0);
@@ -152,6 +231,8 @@ class AccelMetronome extends ChangeNotifier {
 
   @override
   void dispose() {
+    _clock?.cancel();
+    _noticeTimer?.cancel();
     _beatSub?.cancel();
     _rampSub?.cancel();
     _metronome.dispose();
@@ -166,14 +247,15 @@ class AccelMetronome extends ChangeNotifier {
     if (!_ready || _playing) return;
     _lastBeat = null;
     _lastPulse = null;
-    _notice = null;
+    _progress = null;
     _direction = TempoDirection.up;
+    _clearNotice();
     if (_dynamic) {
       final ramp = buildRamp();
       _liveBpm = ramp.startBpm;
       await _metronome.startRamp(ramp);
+      _stepStarted();
     } else {
-      _progress = null;
       _liveBpm = null;
       await _metronome.setTempo(_startBpm);
       await _metronome.start();
@@ -186,12 +268,31 @@ class AccelMetronome extends ChangeNotifier {
     if (!_ready || !_playing) return;
     await _metronome.stop();
     _playing = false;
+    _clearLive();
+    notifyListeners();
+  }
+
+  /// Marks the start of a ramp step for the countdown, and keeps the
+  /// countdown ticking between beats while steps are timed.
+  void _stepStarted() {
+    _stepStartedAt = DateTime.now();
+    if (_stepMode == StepMode.time && _clock == null) {
+      _clock = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => notifyListeners(),
+      );
+    }
+  }
+
+  void _clearLive() {
+    _clock?.cancel();
+    _clock = null;
+    _stepStartedAt = null;
     _lastBeat = null;
     _lastPulse = null;
     _liveBpm = null;
     _progress = null;
     _direction = TempoDirection.up;
-    notifyListeners();
   }
 
   /// The ramp the current dynamic-mode settings describe. Also used by the
@@ -204,7 +305,7 @@ class AccelMetronome extends ChangeNotifier {
       startBpm: _startBpm,
       goalBpm: withTarget ? _targetBpm : null,
       stepBpm: _stepBpm,
-      barsPerStep: _barsPerStep,
+      stepLength: stepLength,
       returnToStart: withTarget && _returnToStart,
     );
   }
@@ -212,15 +313,13 @@ class AccelMetronome extends ChangeNotifier {
   // ------------------------------------------------------------- setters
 
   Future<void> setTempo(double bpm) async {
-    final clamped = bpm.clamp(20.0, 400.0);
+    final clamped = bpm.clamp(minBpm, maxBpm);
     if (clamped == _startBpm) return;
     _startBpm = clamped;
     // While a ramp runs the ramp owns the tempo; the field edits the ramp's
     // start tempo for the next run instead.
     if (_ready && _playing && !_dynamic) await _metronome.setTempo(clamped);
-    if (_targetBpm <= clamped) {
-      _targetBpm = (clamped + _stepBpm).clamp(20.0, 400.0);
-    }
+    _keepTargetAboveStart();
     notifyListeners();
   }
 
@@ -287,16 +386,29 @@ class AccelMetronome extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setStepMode(StepMode mode) {
+    if (mode == _stepMode) return;
+    _stepMode = mode;
+    notifyListeners();
+  }
+
   void setBarsPerStep(int bars) {
-    _barsPerStep = bars.clamp(1, 64);
+    _barsPerStep = bars.clamp(minBarsPerStep, maxBarsPerStep);
+    notifyListeners();
+  }
+
+  void setStepDuration(Duration duration) {
+    _stepDuration = duration < minStepDuration
+        ? minStepDuration
+        : duration > maxStepDuration
+        ? maxStepDuration
+        : duration;
     notifyListeners();
   }
 
   void setStepBpm(double step) {
-    _stepBpm = step.clamp(1.0, 50.0);
-    if (_targetBpm <= _startBpm) {
-      _targetBpm = (_startBpm + _stepBpm).clamp(20.0, 400.0);
-    }
+    _stepBpm = step.clamp(minStepBpm, maxStepBpm);
+    _keepTargetAboveStart();
     notifyListeners();
   }
 
@@ -306,7 +418,7 @@ class AccelMetronome extends ChangeNotifier {
   }
 
   void setTargetBpm(double bpm) {
-    _targetBpm = bpm.clamp(20.0, 400.0);
+    _targetBpm = bpm.clamp(minBpm, maxBpm);
     notifyListeners();
   }
 
@@ -315,10 +427,30 @@ class AccelMetronome extends ChangeNotifier {
     notifyListeners();
   }
 
-  void clearNotice() {
-    if (_notice == null) return;
+  /// A ramp has to climb somewhere: when the start tempo catches up with
+  /// the target, the target moves one step above it.
+  void _keepTargetAboveStart() {
+    if (_targetBpm <= _startBpm) {
+      _targetBpm = (_startBpm + _stepBpm).clamp(minBpm, maxBpm);
+    }
+  }
+
+  // ------------------------------------------------------------- notices
+
+  /// Shows [message] until [noticeDuration] has passed or the next start.
+  void _showNotice(String message) {
+    _notice = message;
+    _noticeTimer?.cancel();
+    _noticeTimer = Timer(noticeDuration, () {
+      _notice = null;
+      notifyListeners();
+    });
+  }
+
+  void _clearNotice() {
+    _noticeTimer?.cancel();
+    _noticeTimer = null;
     _notice = null;
-    notifyListeners();
   }
 
   // -------------------------------------------------------- native events
@@ -349,18 +481,27 @@ class AccelMetronome extends ChangeNotifier {
       }
     }
 
+    if (previous != null && previous.stepIndex != progress.stepIndex) {
+      _stepStarted();
+    }
+
     if (progress.finished) {
       _playing = false;
+      _clock?.cancel();
+      _clock = null;
+      _stepStartedAt = null;
       _lastBeat = null;
       _lastPulse = null;
-      _notice = _returnToStart && _useTarget
-          ? 'Back at ${_format(progress.bpm)} BPM'
-          : 'Target reached — ${_format(progress.bpm)} BPM';
+      _showNotice(
+        _returnToStart && _useTarget
+            ? 'Back at ${formatBpm(progress.bpm)} BPM'
+            : 'Target reached — ${formatBpm(progress.bpm)} BPM',
+      );
     } else if (previous != null &&
         _direction == TempoDirection.down &&
         previous.stepIndex < progress.stepIndex &&
         _noticeForTurnaround(ramp, progress)) {
-      _notice = 'Ramping back down';
+      _showNotice('Ramping back down');
     }
     notifyListeners();
   }
@@ -371,7 +512,4 @@ class AccelMetronome extends ChangeNotifier {
     final total = ramp.totalSteps;
     return progress.stepIndex == (total + 1) ~/ 2;
   }
-
-  static String _format(double bpm) =>
-      bpm == bpm.roundToDouble() ? bpm.round().toString() : bpm.toStringAsFixed(1);
 }

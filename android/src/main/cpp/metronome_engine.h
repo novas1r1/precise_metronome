@@ -23,14 +23,17 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     // First pulse fires `initial_delay_ms` later than it otherwise would.
     void start(int64_t initial_delay_ms = 0);
     // Like start(), but steps the tempo from start_bpm towards goal_bpm by
-    // step_bpm every bars_per_step bars (last step clamped to goal_bpm). With
-    // return_to_start the ramp turns around once goal_bpm has been played
-    // out and steps back down to start_bpm without interrupting scheduling.
-    // With stop_at_goal it stops itself after the final tempo has been
-    // played for bars_per_step bars; otherwise it holds it until stop().
+    // step_bpm once per step (last step clamped to goal_bpm). A step is
+    // bars_per_step bars, or — when step_ms > 0 — step_ms of audio time
+    // rounded up to the next bar line, so the tempo still only changes on
+    // a downbeat. With return_to_start the ramp turns around once goal_bpm
+    // has been played out and steps back down to start_bpm without
+    // interrupting scheduling. With stop_at_goal it stops itself after the
+    // final tempo has been played for one step; otherwise it holds it
+    // until stop().
     void start_ramp(int64_t initial_delay_ms, double start_bpm,
                     double goal_bpm, bool stop_at_goal, double step_bpm,
-                    int bars_per_step, bool return_to_start);
+                    int bars_per_step, int64_t step_ms, bool return_to_start);
     void stop();
     void dispose();
 
@@ -91,7 +94,11 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     static constexpr int kMaxActiveClicks = 16;
 
     void begin_session(int64_t initial_delay_ms);
-    bool on_ramp_bar_completed();
+    // `upcoming_downbeat_frame` is where the next bar would start at the
+    // current tempo; a timed step ends on the first downbeat at or past
+    // its deadline.
+    bool on_ramp_bar_completed(int64_t upcoming_downbeat_frame);
+    int64_t frames_per_pulse(double bpm, int pulses_per_beat) const;
     bool ramp_at_goal() const;
     bool open_stream();
     void close_stream();
@@ -124,6 +131,8 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     std::atomic<bool> ramp_stop_at_goal_{true};
     std::atomic<double> ramp_step_bpm_{0.0};
     std::atomic<int> ramp_bars_per_step_{1};
+    // Timed steps: length in ms, 0 when the ramp counts bars instead.
+    std::atomic<int64_t> ramp_step_ms_{0};
     std::atomic<bool> ramp_return_to_start_{false};
     // Ramp progress published by the audio thread.
     std::atomic<int> ramp_step_index_{0};
@@ -166,6 +175,12 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     // Ramp state, audio-thread-only.
     bool ramp_active_ = false;
     int ramp_bars_in_step_ = 0;
+    // Timed steps, in frames of the open stream (0 = counting bars). A
+    // step starts on the downbeat at ramp_step_start_frame_; the pending
+    // flag asks the scheduler to record the next downbeat as that start.
+    int64_t ramp_step_frames_ = 0;
+    int64_t ramp_step_start_frame_ = 0;
+    bool ramp_step_start_pending_ = false;
     double ramp_current_bpm_ = 120.0;
     // Tempo the ramp is currently heading for: goal_bpm on the way up,
     // start_bpm after a return_to_start turnaround.

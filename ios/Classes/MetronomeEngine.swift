@@ -68,6 +68,12 @@ final class MetronomeEngine {
     private var rampStepBpm: Double = 0
     private var rampBarsPerStep = 1
     private var rampBarsInStep = 0
+    /// Timed steps, in frames (0 = counting bars). A step starts on the
+    /// downbeat at `rampStepStartSampleTime`; the pending flag asks the
+    /// scheduler to record the next downbeat as that start.
+    private var rampStepFrames: AVAudioFramePosition = 0
+    private var rampStepStartSampleTime: AVAudioFramePosition = 0
+    private var rampStepStartPending = false
     private var rampStepIndex = 0
     private var rampCurrentBpm: Double = 120
     /// Tempo the ramp is currently heading for: the goal on the way up,
@@ -127,11 +133,13 @@ final class MetronomeEngine {
     }
 
     /// Like `start`, but steps the tempo from `startBpm` towards `goalBpm`
-    /// by `stepBpm` every `barsPerStep` bars (last step clamped to the
-    /// goal). With `returnToStart` the ramp turns around once the goal has
-    /// been played out and steps back down to `startBpm` without
-    /// interrupting scheduling. With `stopAtGoal` it stops itself after the
-    /// final tempo has been played for `barsPerStep` bars; otherwise it
+    /// by `stepBpm` once per step (last step clamped to the goal). A step
+    /// is `barsPerStep` bars, or — when `stepSeconds` > 0 — that much
+    /// audio time rounded up to the next bar line, so the tempo still only
+    /// changes on a downbeat. With `returnToStart` the ramp turns around
+    /// once the goal has been played out and steps back down to `startBpm`
+    /// without interrupting scheduling. With `stopAtGoal` it stops itself
+    /// after the final tempo has been played for one step; otherwise it
     /// holds that tempo until `stop()`.
     func startRamp(initialDelaySeconds: Double,
                    startBpm: Double,
@@ -139,6 +147,7 @@ final class MetronomeEngine {
                    stopAtGoal: Bool,
                    stepBpm: Double,
                    barsPerStep: Int,
+                   stepSeconds: Double,
                    returnToStart: Bool) {
         serialQueue.async { [weak self] in
             guard let self = self else { return }
@@ -151,6 +160,11 @@ final class MetronomeEngine {
             self.rampStepBpm = stepBpm
             self.rampBarsPerStep = max(barsPerStep, 1)
             self.rampBarsInStep = 0
+            // The engine is set up before any ramp starts, so sampleRate
+            // is final here.
+            self.rampStepFrames =
+                AVAudioFramePosition(max(0, stepSeconds) * self.sampleRate)
+            self.rampStepStartPending = false
             self.rampStepIndex = 0
             self.rampActive = true
             self.beginSession(initialDelaySeconds: initialDelaySeconds)
@@ -371,6 +385,9 @@ final class MetronomeEngine {
                 + initialDelayFrames
             lastScheduledPulseTime = nextPulseSampleTime - currentFramesPerPulse()
             hasAnchor = true
+            // The first pulse is the first downbeat: a timed ramp's first
+            // step starts here.
+            rampStepStartSampleTime = nextPulseSampleTime
         }
 
         let horizon = currentSampleTime + AVAudioFramePosition(lookaheadSeconds * sampleRate)
@@ -414,13 +431,22 @@ final class MetronomeEngine {
                 pulseIndexInBeat = 0
                 beatIndexInBar = (beatIndexInBar + 1) % max(beatsPerBar, 1)
                 if beatIndexInBar == 0 { barIndex += 1 }
-                if beatIndexInBar == 0, rampActive, rampBarCompleted() {
+                if beatIndexInBar == 0, rampActive,
+                   rampBarCompleted(
+                       upcomingDownbeat: nextPulseSampleTime
+                           + max(currentFramesPerPulse(), 1)) {
                     finishRamp()
                     return
                 }
             }
 
             nextPulseSampleTime += max(currentFramesPerPulse(), 1)
+            if rampStepStartPending {
+                // nextPulseSampleTime is now the downbeat that opens the
+                // new step, at the tempo the step just applied.
+                rampStepStartSampleTime = nextPulseSampleTime
+                rampStepStartPending = false
+            }
         }
     }
 
@@ -434,12 +460,24 @@ final class MetronomeEngine {
             : rampCurrentBpm <= rampEffectiveGoal
     }
 
-    /// Advances the ramp after a full bar. Returns true once the final
-    /// tempo has been played for its full number of bars.
-    private func rampBarCompleted() -> Bool {
-        rampBarsInStep += 1
-        guard rampBarsInStep >= rampBarsPerStep else { return false }
-        rampBarsInStep = 0
+    /// Advances the ramp after a full bar. `upcomingDownbeat` is where the
+    /// next bar would start at the current tempo; a timed step ends on the
+    /// first downbeat at or past its deadline. Returns true once the final
+    /// tempo has been played for its full step.
+    private func rampBarCompleted(upcomingDownbeat: AVAudioFramePosition) -> Bool {
+        if rampStepFrames > 0 {
+            guard upcomingDownbeat - rampStepStartSampleTime >= rampStepFrames else {
+                return false
+            }
+            // The next step starts on the downbeat about to be scheduled;
+            // its exact frame is only known once the (possibly new) tempo
+            // has been applied, so the scheduler records it.
+            rampStepStartPending = true
+        } else {
+            rampBarsInStep += 1
+            guard rampBarsInStep >= rampBarsPerStep else { return false }
+            rampBarsInStep = 0
+        }
 
         if rampStepBpm <= 0 { return rampStopAtGoal }
         if rampAtGoal {

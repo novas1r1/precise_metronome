@@ -106,7 +106,7 @@ void MetronomeEngine::start(int64_t initial_delay_ms) {
 void MetronomeEngine::start_ramp(int64_t initial_delay_ms, double start_bpm,
                                  double goal_bpm, bool stop_at_goal,
                                  double step_bpm, int bars_per_step,
-                                 bool return_to_start) {
+                                 int64_t step_ms, bool return_to_start) {
     bpm_.store(start_bpm, std::memory_order_relaxed);
     ramp_goal_bpm_.store(goal_bpm, std::memory_order_relaxed);
     ramp_return_to_start_.store(return_to_start, std::memory_order_relaxed);
@@ -114,6 +114,8 @@ void MetronomeEngine::start_ramp(int64_t initial_delay_ms, double start_bpm,
     ramp_step_bpm_.store(step_bpm, std::memory_order_relaxed);
     ramp_bars_per_step_.store(std::max(bars_per_step, 1),
                               std::memory_order_relaxed);
+    ramp_step_ms_.store(std::max<int64_t>(step_ms, 0),
+                        std::memory_order_relaxed);
     ramp_step_index_.store(0, std::memory_order_relaxed);
     ramp_bpm_.store(start_bpm, std::memory_order_relaxed);
     ramp_finished_.store(false, std::memory_order_relaxed);
@@ -226,15 +228,36 @@ void MetronomeEngine::onErrorAfterClose(oboe::AudioStream* /*stream*/,
     }
 }
 
+int64_t MetronomeEngine::frames_per_pulse(double bpm,
+                                          int pulses_per_beat) const {
+    return std::max<int64_t>(
+        static_cast<int64_t>(
+            (60.0 / bpm / static_cast<double>(std::max(pulses_per_beat, 1))) *
+            static_cast<double>(sample_rate_)),
+        1);
+}
+
 // Called on the audio thread after the last pulse of a bar has been
 // scheduled. Advances the ramp; returns true once the goal tempo has been
-// played for its full number of bars and the ramp should stop the engine.
-bool MetronomeEngine::on_ramp_bar_completed() {
-    if (++ramp_bars_in_step_ <
-        ramp_bars_per_step_.load(std::memory_order_relaxed)) {
-        return false;
+// played for its full step and the ramp should stop the engine.
+bool MetronomeEngine::on_ramp_bar_completed(int64_t upcoming_downbeat_frame) {
+    if (ramp_step_frames_ > 0) {
+        // Timed step: hold until the bar line at or after the deadline.
+        if (upcoming_downbeat_frame - ramp_step_start_frame_ <
+            ramp_step_frames_) {
+            return false;
+        }
+        // The next step starts on the downbeat about to be scheduled; its
+        // exact frame is only known once the (possibly new) tempo has been
+        // applied, so the scheduler records it.
+        ramp_step_start_pending_ = true;
+    } else {
+        if (++ramp_bars_in_step_ <
+            ramp_bars_per_step_.load(std::memory_order_relaxed)) {
+            return false;
+        }
+        ramp_bars_in_step_ = 0;
     }
-    ramp_bars_in_step_ = 0;
 
     const double step = ramp_step_bpm_.load(std::memory_order_relaxed);
     if (step <= 0.0) {
@@ -305,6 +328,10 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         pending_nudge_frames_.store(0, std::memory_order_release);
         ramp_active_ = ramp_enabled_.load(std::memory_order_acquire);
         ramp_bars_in_step_ = 0;
+        // The stream is open here, so the sample rate is final.
+        ramp_step_frames_ =
+            ramp_step_ms_.load(std::memory_order_relaxed) * sample_rate_ / 1000;
+        ramp_step_start_pending_ = false;
         ramp_current_bpm_ = bpm_.load(std::memory_order_relaxed);
         ramp_effective_goal_ = ramp_goal_bpm_.load(std::memory_order_relaxed);
         ramp_return_bpm_ = ramp_current_bpm_;
@@ -352,11 +379,7 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         const double bpm_now = bpm_.load(std::memory_order_relaxed);
         const int ppb_now = std::max(
             pulses_per_beat_.load(std::memory_order_relaxed), 1);
-        const int64_t frames_per_pulse_now = std::max<int64_t>(
-            static_cast<int64_t>(
-                (60.0 / bpm_now / static_cast<double>(ppb_now)) *
-                static_cast<double>(sample_rate_)),
-            1);
+        const int64_t frames_per_pulse_now = frames_per_pulse(bpm_now, ppb_now);
 
         if (!has_anchor_) {
             // First buffer of this play session: anchor the first pulse
@@ -369,6 +392,9 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
                 initial_delay_frames_.load(std::memory_order_acquire);
             last_pulse_frame_ = next_pulse_frame_ - frames_per_pulse_now;
             has_anchor_ = true;
+            // The first pulse is the first downbeat: a timed ramp's first
+            // step starts here.
+            ramp_step_start_frame_ = next_pulse_frame_;
         }
 
         // Apply any pending phase nudge: shift the next pulse, but never
@@ -453,7 +479,10 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
                 beat_index_in_bar_ = (beat_index_in_bar_ + 1) % bpb;
                 if (beat_index_in_bar_ == 0) ++bar_index_;
                 if (beat_index_in_bar_ == 0 && ramp_active_ &&
-                    on_ramp_bar_completed()) {
+                    on_ramp_bar_completed(
+                        next_pulse_frame_ +
+                        frames_per_pulse(
+                            bpm_.load(std::memory_order_relaxed), ppb))) {
                     // Goal tempo played out: stop scheduling. Clicks
                     // already in active_clicks_ still ring out.
                     playing_.store(false, std::memory_order_release);
@@ -463,12 +492,15 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
                 }
             }
 
-            const double bpm = bpm_.load(std::memory_order_relaxed);
-            const int64_t frames_per_pulse = static_cast<int64_t>(
-                (60.0 / bpm / static_cast<double>(ppb)) *
-                static_cast<double>(sample_rate_));
             last_pulse_frame_ = next_pulse_frame_;
-            next_pulse_frame_ += (frames_per_pulse > 0 ? frames_per_pulse : 1);
+            next_pulse_frame_ += frames_per_pulse(
+                bpm_.load(std::memory_order_relaxed), ppb);
+            if (ramp_step_start_pending_) {
+                // next_pulse_frame_ is now the downbeat that opens the new
+                // step, at the tempo the step just applied.
+                ramp_step_start_frame_ = next_pulse_frame_;
+                ramp_step_start_pending_ = false;
+            }
         }
     } else {
         // Not playing: make sure we'll re-anchor when we resume.

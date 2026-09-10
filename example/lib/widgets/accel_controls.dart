@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../design/accel_tokens.dart';
+import '../formatting.dart';
 
 /// Accel's control primitives, transcribed from
 /// `docs/design_system/components/core/*.jsx`.
@@ -123,7 +125,9 @@ class AccelButton extends StatelessWidget {
           curve: AccelMotion.easeOut,
           height: _height,
           width: fullWidth ? double.infinity : null,
-          padding: EdgeInsets.symmetric(horizontal: size == AccelButtonSize.xl ? 40 : 24),
+          padding: EdgeInsets.symmetric(
+            horizontal: size == AccelButtonSize.xl ? 40 : 24,
+          ),
           decoration: BoxDecoration(
             color: primary
                 ? (pressed ? AccelColors.accentPress : AccelColors.accent)
@@ -467,11 +471,7 @@ class AccelSegmented<T> extends StatelessWidget {
     if (label == null) return control;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        AccelLabel(label!),
-        const SizedBox(height: 8),
-        control,
-      ],
+      children: [AccelLabel(label!), const SizedBox(height: 8), control],
     );
   }
 }
@@ -540,7 +540,11 @@ class AccelChoiceList<T> extends StatelessWidget {
 }
 
 class _ChoiceRow<T> extends StatelessWidget {
-  const _ChoiceRow({required this.choice, required this.selected, required this.onTap});
+  const _ChoiceRow({
+    required this.choice,
+    required this.selected,
+    required this.onTap,
+  });
 
   final AccelChoice<T> choice;
   final bool selected;
@@ -574,14 +578,19 @@ class _ChoiceRow<T> extends StatelessWidget {
                       style: AccelType.display(
                         size: 15,
                         weight: 500,
-                        color: selected ? AccelColors.coral300 : AccelColors.textPrimary,
+                        color: selected
+                            ? AccelColors.coral300
+                            : AccelColors.textPrimary,
                       ),
                     ),
                     if (choice.description != null) ...[
                       const SizedBox(height: 2),
                       Text(
                         choice.description!,
-                        style: AccelType.mono(size: 12, color: AccelColors.textMuted),
+                        style: AccelType.mono(
+                          size: 12,
+                          color: AccelColors.textMuted,
+                        ),
                       ),
                     ],
                   ],
@@ -589,7 +598,11 @@ class _ChoiceRow<T> extends StatelessWidget {
               ),
               if (selected) ...[
                 const SizedBox(width: 10),
-                const Icon(Icons.check_rounded, size: 16, color: AccelColors.coral300),
+                const Icon(
+                  Icons.check_rounded,
+                  size: 16,
+                  color: AccelColors.coral300,
+                ),
               ],
             ],
           ),
@@ -732,8 +745,7 @@ class AccelNumberField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget button(IconData icon, double delta) {
-      final canPress =
-          enabled && (delta < 0 ? value > min : value < max);
+      final canPress = enabled && (delta < 0 ? value > min : value < max);
       return _Pressable(
         onTap: canPress
             ? () => onChanged((value + delta * step).clamp(min, max))
@@ -811,4 +823,193 @@ class AccelNumberField extends StatelessWidget {
   String get _formatted => value == value.roundToDouble()
       ? value.round().toString()
       : value.toStringAsFixed(1);
+}
+
+// ---------------------------------------------------------- duration field
+
+/// A minutes:seconds stepper for timed ramp steps: minus / value / plus,
+/// with the value editable in place. Typing accepts `m:ss` or plain
+/// seconds; the result is clamped to [min]..[max] when the field loses
+/// focus or the keyboard's done key is pressed.
+class AccelDurationField extends StatefulWidget {
+  const AccelDurationField({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.onChanged,
+    this.min = const Duration(seconds: 1),
+    this.max = const Duration(hours: 1),
+    this.step = const Duration(seconds: 5),
+    this.enabled = true,
+  });
+
+  final String label;
+  final Duration value;
+  final ValueChanged<Duration> onChanged;
+  final Duration min;
+  final Duration max;
+  final Duration step;
+  final bool enabled;
+
+  /// `m:ss`, or `h:mm:ss` from an hour up — the format the field edits.
+  static String format(Duration d) => formatClock(d);
+
+  /// Parses `m:ss`, `h:mm:ss` or a bare number of seconds. `null` when the
+  /// text is not a duration.
+  static Duration? parse(String text) {
+    final parts = text.trim().split(':');
+    if (parts.isEmpty || parts.length > 3) return null;
+    var seconds = 0;
+    for (final part in parts) {
+      final n = int.tryParse(part.trim());
+      if (n == null || n < 0) return null;
+      seconds = seconds * 60 + n;
+    }
+    return Duration(seconds: seconds);
+  }
+
+  @override
+  State<AccelDurationField> createState() => _AccelDurationFieldState();
+}
+
+class _AccelDurationFieldState extends State<AccelDurationField> {
+  late final TextEditingController _controller = TextEditingController(
+    text: AccelDurationField.format(widget.value),
+  );
+  final FocusNode _focus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(_onFocus);
+  }
+
+  @override
+  void didUpdateWidget(AccelDurationField old) {
+    super.didUpdateWidget(old);
+    // Presets and the steppers change the value from outside; mirror them
+    // unless the user is in the middle of typing.
+    if (old.value != widget.value && !_focus.hasFocus) {
+      _controller.text = AccelDurationField.format(widget.value);
+    }
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_onFocus);
+    _focus.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onFocus() {
+    if (!_focus.hasFocus) _commit();
+  }
+
+  void _commit() {
+    final parsed = AccelDurationField.parse(_controller.text);
+    final next = parsed == null
+        ? widget.value
+        : parsed < widget.min
+        ? widget.min
+        : parsed > widget.max
+        ? widget.max
+        : parsed;
+    _controller.text = AccelDurationField.format(next);
+    if (next != widget.value) widget.onChanged(next);
+  }
+
+  Duration _clamp(Duration d) => d < widget.min
+      ? widget.min
+      : d > widget.max
+      ? widget.max
+      : d;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget button(IconData icon, int direction) {
+      final canPress =
+          widget.enabled &&
+          (direction < 0
+              ? widget.value > widget.min
+              : widget.value < widget.max);
+      return _Pressable(
+        onTap: canPress
+            ? () {
+                _focus.unfocus();
+                widget.onChanged(
+                  _clamp(widget.value + widget.step * direction),
+                );
+              }
+            : null,
+        pressedScale: 0.9,
+        builder: (context, pressed) => Container(
+          width: 40,
+          height: double.infinity,
+          color: pressed ? AccelColors.surfaceGlassStrong : Colors.transparent,
+          child: Icon(
+            icon,
+            size: 20,
+            color: canPress ? AccelColors.textPrimary : AccelColors.textMuted,
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AccelLabel(widget.label),
+        const SizedBox(height: 8),
+        Opacity(
+          opacity: widget.enabled ? 1 : 0.45,
+          child: Container(
+            height: AccelControl.lg,
+            decoration: BoxDecoration(
+              color: AccelColors.surfaceInput,
+              borderRadius: AccelRadius.mdAll,
+              border: Border.all(color: AccelColors.surfaceGlassBorder),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Row(
+              children: [
+                button(Icons.remove_rounded, -1),
+                // The value reads as a clock ("1:30"), so it carries no
+                // unit; the field fills whatever is left between the
+                // buttons and never overflows, even next to another field.
+                Expanded(
+                  child: Center(
+                    child: TextField(
+                      controller: _controller,
+                      focusNode: _focus,
+                      enabled: widget.enabled,
+                      textAlign: TextAlign.center,
+                      keyboardType: TextInputType.datetime,
+                      textInputAction: TextInputAction.done,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp('[0-9:]')),
+                      ],
+                      onSubmitted: (_) => _focus.unfocus(),
+                      onTapOutside: (_) => _focus.unfocus(),
+                      cursorColor: AccelColors.accent,
+                      style: AccelType.display(
+                        size: 22,
+                        weight: 700,
+                        letterSpacing: -0.02 * 22,
+                        tabularFigures: true,
+                      ),
+                      decoration: const InputDecoration.collapsed(
+                        hintText: '',
+                      ),
+                    ),
+                  ),
+                ),
+                button(Icons.add_rounded, 1),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }

@@ -197,12 +197,12 @@ class Metronome {
 
   /// Starts a progressive tempo ramp from bar position zero.
   ///
-  /// The tempo is set to `ramp.startBpm`, held for `ramp.barsPerStep`
-  /// bars, then moved `ramp.stepBpm` towards `ramp.goalBpm` — exactly on
-  /// the bar line, sample-accurately, on the native side. When the goal
-  /// tempo has been played for its bars the metronome stops itself and
-  /// [isPlaying] becomes `false`. Listen to [rampProgress] to follow the
-  /// steps.
+  /// The tempo is set to `ramp.startBpm`, held for one `ramp.stepLength`
+  /// (a number of bars, or a duration that ends at the next bar line), then
+  /// moved `ramp.stepBpm` towards `ramp.goalBpm` — exactly on the bar
+  /// line, sample-accurately, on the native side. When the goal tempo has
+  /// been played for its step the metronome stops itself and [isPlaying]
+  /// becomes `false`. Listen to [rampProgress] to follow the steps.
   ///
   /// With `ramp.holdAtGoal` the metronome keeps clicking at the ramp's final
   /// tempo instead of stopping; [activeRamp] stays set and the last

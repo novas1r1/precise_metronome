@@ -16,7 +16,8 @@ flutter run
 | The dial's expanding ring, beat dots, bar counter, live accent cell | `Metronome.beats` (`BeatEvent`) |
 | Dynamic mode, the badge readout, the step progress line | `TempoRamp` + `Metronome.startRamp` / `rampProgress` |
 | "Ramp back down" | `TempoRamp.returnToStart` — one uninterrupted native ramp, so the turnaround lands on the bar line like every other step |
-| The plan under the card (`60 → 65 → … → 120 → … → 60`) | `TempoRamp.steps` / `totalSteps` |
+| "Hold each tempo for" — bars or time, with quick picks and a typed `m:ss` field; the countdown on the dial | `RampStepLength.bars` / `RampStepLength.time` — timed steps end on the next bar line, counted natively in audio frames |
+| The plan under the card (`60 → 65 → … → 120 → … → 60 · 25 steps · 100 bars · ~4:42`) | `TempoRamp.steps` / `totalSteps` / `totalBars` / `totalDuration` |
 | Time signature picker, accent grid | `setTimeSignature` / `setAccentPattern` |
 | Subdivision picker (♩ ♪♪ ♪³ ♬♬) | `setSubdivision` |
 | Settings sheet: volume, and all five click voices with a line of description each | `setVolume`, `setVoice` |
@@ -32,7 +33,12 @@ the stepper, which is relabelled "Tempo" there.
   `docs/design_system/components/core/`.
 - `lib/accel_metronome.dart` — the only place that talks to `Metronome`;
   republishes the native streams as something the widgets can paint.
-- `lib/metronome_screen.dart` — the screen itself.
+- `lib/metronome_screen.dart` — owns the model and lays the screen out.
+- `lib/screen/` — the screen's sections (header, dial, meter controls,
+  tempo and dynamic-mode cards, transport bar, settings sheet), one widget
+  per file.
+- `lib/formatting.dart` — the tempo and clock formatting the screen and
+  the model share.
 
 ## Where it departs from the design system
 
