@@ -91,9 +91,6 @@ final class MetronomeEngine {
     private let lookaheadSeconds: Double = 0.1   // schedule 100 ms ahead
     private let tickInterval: DispatchTimeInterval = .milliseconds(25)
 
-    // Background audio support.
-    private var backgroundEnabled = false
-
     // MARK: - Public API (all thread-safe; marshals onto serialQueue)
 
     func initialize() throws {
@@ -240,13 +237,24 @@ final class MetronomeEngine {
         }
     }
 
+    /// One flag per pulse of the bar, or one per beat when there are no
+    /// subdivisions. The scheduler wraps on the pattern's length, so any
+    /// non-empty pattern is safe to apply.
+    ///
+    /// This used to apply the pattern only when its length equalled
+    /// `beatsPerBar`, described as a guard against racing
+    /// `setTimeSignature`. There is no such race: both setters, and the
+    /// scheduler, run on `serialQueue` in call order, so a pattern always
+    /// lands after the time signature it was written for. The guard did
+    /// have an effect, though: it rejected every per-pulse pattern (beats
+    /// x pulsesPerBeat flags) sent while a subdivision was on, so accents
+    /// on subdivision pulses silently never applied on iOS. Do not bring
+    /// it back; if a length check is ever wanted, compare against
+    /// `beatsPerBar * pulsesPerBeat` on the queue, not `beatsPerBar`.
     func setAccentPattern(_ pattern: [Bool]) {
+        guard !pattern.isEmpty else { return }
         serialQueue.async { [weak self] in
-            guard let self = self else { return }
-            // Guard against race with setTimeSignature — only apply if lengths match.
-            if pattern.count == self.beatsPerBar {
-                self.accentPattern = pattern
-            }
+            self?.accentPattern = pattern
         }
     }
 
@@ -286,18 +294,6 @@ final class MetronomeEngine {
         }
     }
 
-    func enableBackgroundPlayback() {
-        // On iOS, background playback is handled entirely by the audio session
-        // category + `UIBackgroundModes: audio` in Info.plist. The session is
-        // already .playback, so nothing further is required here — we just
-        // flag state in case we need it later.
-        backgroundEnabled = true
-    }
-
-    func disableBackgroundPlayback() {
-        backgroundEnabled = false
-    }
-
     func dispose() {
         serialQueue.sync {
             self.isPlaying = false
@@ -321,17 +317,14 @@ final class MetronomeEngine {
         try session.setActive(true, options: [])
     }
 
+    /// A phone call or another app taking the session stops the metronome.
+    /// It does not resume by itself. Route changes (headphones unplugged)
+    /// need no handling: a `.playback` session keeps playing through them.
     private func subscribeToInterruptions() {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleInterruption(_:)),
             name: AVAudioSession.interruptionNotification,
-            object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleRouteChange(_:)),
-            name: AVAudioSession.routeChangeNotification,
             object: nil
         )
     }
@@ -342,14 +335,8 @@ final class MetronomeEngine {
               let type = AVAudioSession.InterruptionType(rawValue: typeRaw)
         else { return }
         if type == .began {
-            // Stop cleanly. We do not auto-resume in v1.
             stop()
         }
-    }
-
-    @objc private func handleRouteChange(_ note: Notification) {
-        // If headphones yank, iOS policy for .playback is to keep playing.
-        // We don't need to do anything here, but this is where we'd react.
     }
 
     // MARK: - Scheduler

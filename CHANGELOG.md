@@ -21,6 +21,13 @@
   dial counts the step down, and the plan line now shows the total time.
 - **Breaking:** `TempoRamp(barsPerStep: n)` becomes
   `TempoRamp(stepLength: RampStepLength.bars(n))`.
+- Fixed: on iOS, `setAccentPattern` was ignored whenever a subdivision was
+  on, because the engine only accepted one flag per beat. On Android,
+  patterns longer than 32 flags were cut off at the JNI boundary. Both
+  engines now take the full per-pulse pattern (up to 32 beats × 4 pulses).
+- Fixed: the iOS plugin replied twice to a call made before `init()`.
+- Android maps voice names next to the synth in C++, so the Dart, Kotlin
+  and native voice lists cannot drift apart.
 
 ## 0.7.0 — Round-trip ramps and accents on subdivision pulses
 

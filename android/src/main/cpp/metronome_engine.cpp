@@ -24,6 +24,14 @@ MetronomeEngine::~MetronomeEngine() {
 
 bool MetronomeEngine::initialize() {
     std::lock_guard<std::mutex> lock(stream_mutex_);
+    if (!start_stream()) {
+        return false;
+    }
+    LOGI("Engine initialized at %d Hz", sample_rate_);
+    return true;
+}
+
+bool MetronomeEngine::start_stream() {
     if (!open_stream()) {
         return false;
     }
@@ -39,11 +47,9 @@ bool MetronomeEngine::initialize() {
     oboe::Result result = stream_->requestStart();
     if (result != oboe::Result::OK) {
         LOGE("Failed to start stream: %s", oboe::convertToText(result));
-        stream_->close();
-        stream_.reset();
+        close_stream();
         return false;
     }
-    LOGI("Engine initialized at %d Hz", sample_rate_);
     return true;
 }
 
@@ -214,17 +220,8 @@ void MetronomeEngine::onErrorAfterClose(oboe::AudioStream* /*stream*/,
     LOGE("Audio stream error after close: %s", oboe::convertToText(result));
     std::lock_guard<std::mutex> lock(stream_mutex_);
     stream_.reset();
-    if (open_stream()) {
-        rebuild_buffers(static_cast<double>(sample_rate_));
-        for (int v = 0; v < kVoiceCount; ++v) {
-            buffers_current_[v] = buffers_next_[v];
-        }
-        buffers_pending_.store(false, std::memory_order_release);
-        oboe::Result start_result = stream_->requestStart();
-        if (start_result != oboe::Result::OK) {
-            LOGE("Failed to restart after error: %s",
-                 oboe::convertToText(start_result));
-        }
+    if (start_stream()) {
+        LOGI("Stream reopened at %d Hz", sample_rate_);
     }
 }
 

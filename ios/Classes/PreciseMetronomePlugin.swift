@@ -1,6 +1,8 @@
 import Flutter
 import UIKit
 
+/// Flutter entry point: dispatches method calls to the engine and forwards
+/// its ramp progress and beat events to Dart.
 public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
 
     private var engine: MetronomeEngine?
@@ -34,152 +36,107 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
         beatChannel.setStreamHandler(beatHandler)
     }
 
+    // MARK: - Dispatch
+
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        let args = call.arguments as? [String: Any] ?? [:]
+
         switch call.method {
 
         case "init":
-            do {
-                let e = MetronomeEngine()
-                e.onRampProgress = { [weak self] progress in
-                    DispatchQueue.main.async {
-                        self?.rampSink?([
-                            "stepIndex": progress.stepIndex,
-                            "bpm": progress.bpm,
-                            "finished": progress.finished,
-                        ])
-                    }
-                }
-                e.onBeat = { [weak self] beat in
-                    // Already on the main queue.
-                    self?.beatSink?([
-                        "bar": beat.bar,
-                        "beat": beat.beat,
-                        "pulse": beat.pulse,
-                        "accent": beat.accent,
-                    ])
-                }
-                try e.initialize()
-                engine = e
-                result(nil)
-            } catch {
-                result(FlutterError(
-                    code: "init_failed",
-                    message: "Could not initialize audio engine: \(error.localizedDescription)",
-                    details: nil))
-            }
+            initEngine(result)
 
         case "start":
-            let args = call.arguments as? [String: Any]
-            let initialDelayMs = args?["initialDelayMs"] as? Int ?? 0
-            requireEngine(result)?.start(
-                initialDelaySeconds: Double(initialDelayMs) / 1000.0)
-            result(nil)
+            let initialDelayMs = args["initialDelayMs"] as? Int ?? 0
+            withEngine(result) { $0.start(initialDelaySeconds: seconds(initialDelayMs)) }
 
         case "startRamp":
-            guard let args = call.arguments as? [String: Any],
-                  let startBpm = args["startBpm"] as? Double,
+            guard let startBpm = args["startBpm"] as? Double,
                   let goalBpm = args["goalBpm"] as? Double,
                   let stopAtGoal = args["stopAtGoal"] as? Bool,
                   let stepBpm = args["stepBpm"] as? Double,
                   let barsPerStep = args["barsPerStep"] as? Int else {
-                result(argError("startBpm, goalBpm, stepBpm: Double, stopAtGoal: Bool, barsPerStep: Int")); return
+                return result(argError("startBpm, goalBpm, stepBpm: Double, stopAtGoal: Bool, barsPerStep: Int"))
             }
             let initialDelayMs = args["initialDelayMs"] as? Int ?? 0
             // A timed step: the step length in ms, 0 for bars.
             let stepMs = args["stepMs"] as? Int ?? 0
             let returnToStart = args["returnToStart"] as? Bool ?? false
             guard barsPerStep >= 1 || stepMs >= 1 else {
-                result(argError("barsPerStep >= 1 or stepMs >= 1")); return
+                return result(argError("barsPerStep >= 1 or stepMs >= 1"))
             }
-            requireEngine(result)?.startRamp(
-                initialDelaySeconds: Double(initialDelayMs) / 1000.0,
-                startBpm: startBpm,
-                goalBpm: goalBpm,
-                stopAtGoal: stopAtGoal,
-                stepBpm: stepBpm,
-                barsPerStep: barsPerStep,
-                stepSeconds: Double(stepMs) / 1000.0,
-                returnToStart: returnToStart)
-            result(nil)
+            withEngine(result) {
+                $0.startRamp(
+                    initialDelaySeconds: seconds(initialDelayMs),
+                    startBpm: startBpm,
+                    goalBpm: goalBpm,
+                    stopAtGoal: stopAtGoal,
+                    stepBpm: stepBpm,
+                    barsPerStep: barsPerStep,
+                    stepSeconds: seconds(stepMs),
+                    returnToStart: returnToStart)
+            }
 
         case "nudge":
-            guard let args = call.arguments as? [String: Any],
-                  let deltaMs = args["deltaMs"] as? Int else {
-                result(argError("deltaMs: Int")); return
+            guard let deltaMs = args["deltaMs"] as? Int else {
+                return result(argError("deltaMs: Int"))
             }
-            requireEngine(result)?.nudge(
-                deltaSeconds: Double(deltaMs) / 1000.0)
-            result(nil)
+            withEngine(result) { $0.nudge(deltaSeconds: seconds(deltaMs)) }
 
         case "stop":
-            requireEngine(result)?.stop()
-            result(nil)
+            withEngine(result) { $0.stop() }
 
         case "setTempo":
-            guard let args = call.arguments as? [String: Any],
-                  let bpm = args["bpm"] as? Double else {
-                result(argError("bpm: Double")); return
+            guard let bpm = args["bpm"] as? Double else {
+                return result(argError("bpm: Double"))
             }
-            requireEngine(result)?.setTempo(bpm)
-            result(nil)
+            withEngine(result) { $0.setTempo(bpm) }
 
         case "setTimeSignature":
-            guard let args = call.arguments as? [String: Any],
-                  let beatsPerBar = args["beatsPerBar"] as? Int,
+            guard let beatsPerBar = args["beatsPerBar"] as? Int,
                   let pattern = args["accentPattern"] as? [Bool] else {
-                result(argError("beatsPerBar: Int, accentPattern: [Bool]")); return
+                return result(argError("beatsPerBar: Int, accentPattern: [Bool]"))
             }
-            requireEngine(result)?.setTimeSignature(beatsPerBar: beatsPerBar, accentPattern: pattern)
-            result(nil)
+            withEngine(result) { $0.setTimeSignature(beatsPerBar: beatsPerBar, accentPattern: pattern) }
 
         case "setAccentPattern":
-            guard let args = call.arguments as? [String: Any],
-                  let pattern = args["accentPattern"] as? [Bool] else {
-                result(argError("accentPattern: [Bool]")); return
+            guard let pattern = args["accentPattern"] as? [Bool] else {
+                return result(argError("accentPattern: [Bool]"))
             }
-            requireEngine(result)?.setAccentPattern(pattern)
-            result(nil)
+            withEngine(result) { $0.setAccentPattern(pattern) }
 
         case "setSubdivision":
-            guard let args = call.arguments as? [String: Any],
-                  let ppb = args["pulsesPerBeat"] as? Int else {
-                result(argError("pulsesPerBeat: Int")); return
+            guard let pulsesPerBeat = args["pulsesPerBeat"] as? Int else {
+                return result(argError("pulsesPerBeat: Int"))
             }
-            requireEngine(result)?.setSubdivision(pulsesPerBeat: ppb)
-            result(nil)
+            withEngine(result) { $0.setSubdivision(pulsesPerBeat: pulsesPerBeat) }
 
         case "setVoice":
-            guard let args = call.arguments as? [String: Any],
-                  let voice = args["voice"] as? String else {
-                result(argError("voice: String")); return
+            guard let voice = args["voice"] as? String else {
+                return result(argError("voice: String"))
             }
-            requireEngine(result)?.setVoice(voice)
-            result(nil)
+            withEngine(result) { $0.setVoice(voice) }
 
         case "setBeatEvents":
-            guard let args = call.arguments as? [String: Any],
-                  let enabled = args["enabled"] as? Bool else {
-                result(argError("enabled: Bool")); return
+            guard let enabled = args["enabled"] as? Bool else {
+                return result(argError("enabled: Bool"))
             }
-            let includeSub = args["includeSubdivisions"] as? Bool ?? false
-            requireEngine(result)?.setBeatEvents(enabled: enabled, includeSubdivisions: includeSub)
-            result(nil)
+            let includeSubdivisions = args["includeSubdivisions"] as? Bool ?? false
+            withEngine(result) {
+                $0.setBeatEvents(enabled: enabled, includeSubdivisions: includeSubdivisions)
+            }
 
         case "setVolume":
-            guard let args = call.arguments as? [String: Any],
-                  let volume = args["volume"] as? Double else {
-                result(argError("volume: Double")); return
+            guard let volume = args["volume"] as? Double else {
+                return result(argError("volume: Double"))
             }
-            requireEngine(result)?.setVolume(volume)
-            result(nil)
+            withEngine(result) { $0.setVolume(volume) }
 
-        case "enableBackgroundPlayback":
-            requireEngine(result)?.enableBackgroundPlayback()
-            result(nil)
-
-        case "disableBackgroundPlayback":
-            requireEngine(result)?.disableBackgroundPlayback()
-            result(nil)
+        case "enableBackgroundPlayback", "disableBackgroundPlayback":
+            // Background playback on iOS is the audio session category
+            // (`.playback`, set at init) plus `UIBackgroundModes: audio`
+            // in the host app's Info.plist. There is nothing to switch.
+            withEngine(result) { _ in }
 
         case "dispose":
             engine?.dispose()
@@ -191,18 +148,59 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
         }
     }
 
-    private func requireEngine(_ result: FlutterResult) -> MetronomeEngine? {
-        if let e = engine { return e }
-        result(FlutterError(code: "not_initialized",
-                            message: "Call init() first.",
-                            details: nil))
-        return nil
+    private func initEngine(_ result: FlutterResult) {
+        let e = MetronomeEngine()
+        e.onRampProgress = { [weak self] progress in
+            DispatchQueue.main.async {
+                self?.rampSink?([
+                    "stepIndex": progress.stepIndex,
+                    "bpm": progress.bpm,
+                    "finished": progress.finished,
+                ])
+            }
+        }
+        e.onBeat = { [weak self] beat in
+            // Already on the main queue.
+            self?.beatSink?([
+                "bar": beat.bar,
+                "beat": beat.beat,
+                "pulse": beat.pulse,
+                "accent": beat.accent,
+            ])
+        }
+        do {
+            try e.initialize()
+            engine = e
+            result(nil)
+        } catch {
+            result(FlutterError(
+                code: "init_failed",
+                message: "Could not initialize audio engine: \(error.localizedDescription)",
+                details: nil))
+        }
+    }
+
+    /// Runs `body` on the engine and replies with success, or replies
+    /// with `not_initialized` when there is no engine yet. Either way the
+    /// result is sent exactly once.
+    private func withEngine(_ result: FlutterResult, _ body: (MetronomeEngine) -> Void) {
+        guard let engine = engine else {
+            return result(FlutterError(code: "not_initialized",
+                                       message: "Call init() first.",
+                                       details: nil))
+        }
+        body(engine)
+        result(nil)
     }
 
     private func argError(_ expected: String) -> FlutterError {
         FlutterError(code: "bad_arguments",
                      message: "Expected \(expected).",
                      details: nil)
+    }
+
+    private func seconds(_ milliseconds: Int) -> Double {
+        Double(milliseconds) / 1000.0
     }
 }
 

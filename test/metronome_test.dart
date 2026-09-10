@@ -239,6 +239,25 @@ void main() {
     expect(m.accentBeat, 1);
   });
 
+  test('the longest per-pulse pattern reaches native intact', () async {
+    final m = Metronome();
+    await m.init();
+    await m.setTimeSignature(TimeSignature(32, 4));
+    await m.setSubdivision(Subdivision.quadruple);
+    calls.clear();
+
+    // 32 beats x 4 pulses is the most flags the API allows. The native
+    // bridges must carry all of them, not just the first 32.
+    final pattern = List<bool>.generate(128, (i) => i % 4 == 0);
+    await m.setAccentPattern(pattern);
+
+    final call = calls.lastWhere((c) => c.method == 'setAccentPattern');
+    expect(
+      ((call.arguments as Map)['accentPattern'] as List).cast<bool>(),
+      pattern,
+    );
+  });
+
   test('setAccentPattern rejects wrong length', () async {
     final m = Metronome();
     await m.init();

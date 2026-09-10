@@ -19,6 +19,10 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     MetronomeEngine();
     ~MetronomeEngine() override;
 
+    // The longest accent pattern: one flag per pulse of a bar, 32 beats x
+    // 4 subdivision pulses. Longer patterns are cut off.
+    static constexpr int kMaxPattern = 128;
+
     bool initialize();
     // First pulse fires `initial_delay_ms` later than it otherwise would.
     void start(int64_t initial_delay_ms = 0);
@@ -89,8 +93,6 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
                            oboe::Result result) override;
 
  private:
-    // One flag per pulse of a bar: 32 beats x 4 subdivision pulses.
-    static constexpr int kMaxPattern = 128;
     static constexpr int kMaxActiveClicks = 16;
 
     void begin_session(int64_t initial_delay_ms);
@@ -101,6 +103,10 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     int64_t frames_per_pulse(double bpm, int pulses_per_beat) const;
     bool ramp_at_goal() const;
     bool open_stream();
+    // Opens the stream, renders the click buffers for its sample rate and
+    // starts it, so the first callback already sees valid buffers.
+    // stream_mutex_ must be held.
+    bool start_stream();
     void close_stream();
     void rebuild_buffers(double sample_rate);
 

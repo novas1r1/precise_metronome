@@ -5,11 +5,20 @@ import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import io.flutter.plugin.common.EventChannel
 import io.flutter.embedding.engine.plugins.FlutterPlugin
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
+/**
+ * Flutter entry point: dispatches method calls to the native engine and
+ * forwards its ramp progress and beat events to Dart.
+ *
+ * Both event streams are polled from the main thread rather than pushed
+ * from the audio callback. Ramp progress lives in atomics the audio thread
+ * publishes; beat events sit in a native ring buffer it fills. Polling is
+ * cheaper and safer than JNI callbacks from a real-time thread.
+ */
 class PreciseMetronomePlugin :
     FlutterPlugin,
     MethodChannel.MethodCallHandler {
@@ -19,21 +28,27 @@ class PreciseMetronomePlugin :
     private lateinit var beatChannel: EventChannel
     private lateinit var appContext: Context
 
-    // Ramp progress is published by the audio thread through atomics; we
-    // poll them from the main thread while a ramp is running and forward
-    // changes to Dart. Cheaper and safer than JNI callbacks from the
-    // real-time audio callback.
+    private var engineHandle = 0L
+    private var backgroundEnabled = false
+
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Ramp progress: polled while a ramp runs, forwarded when it changes.
     private var rampSink: EventChannel.EventSink? = null
     private var rampPolling = false
     private var lastRampStep = -1
     private var lastRampFinished = false
-    // Beat events: the audio thread writes each rendered pulse into a native
-    // ring buffer; while Dart listens and the engine plays we drain it from
-    // the main thread every BEAT_POLL_MS.
+    private val rampPoller = object : Runnable {
+        override fun run() {
+            if (!rampPolling) return
+            pollRamp()
+            if (rampPolling) mainHandler.postDelayed(this, RAMP_POLL_MS)
+        }
+    }
+
+    // Beat events: drained while Dart listens and the engine plays.
     private var beatSink: EventChannel.EventSink? = null
     private var beatEventsEnabled = false
-    private var beatIncludeSub = false
     private var enginePlaying = false
     private var playSession = 0
     private var beatPolling = false
@@ -44,300 +59,70 @@ class PreciseMetronomePlugin :
             if (beatPolling) mainHandler.postDelayed(this, BEAT_POLL_MS)
         }
     }
-    private val rampPoller = object : Runnable {
-        override fun run() {
-            if (!rampPolling) return
-            pollRamp()
-            if (rampPolling) mainHandler.postDelayed(this, RAMP_POLL_MS)
-        }
-    }
 
-    private var engineHandle: Long = 0L
-    private var backgroundEnabled: Boolean = false
+    // ------------------------------------------------------------ lifecycle
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         appContext = binding.applicationContext
         channel = MethodChannel(binding.binaryMessenger, "precise_metronome")
         channel.setMethodCallHandler(this)
         rampChannel = EventChannel(binding.binaryMessenger, "precise_metronome/ramp")
-        rampChannel.setStreamHandler(object : EventChannel.StreamHandler {
-            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                rampSink = events
-            }
-            override fun onCancel(arguments: Any?) {
-                rampSink = null
-            }
-        })
+        rampChannel.setStreamHandler(streamHandler { rampSink = it })
         beatChannel = EventChannel(binding.binaryMessenger, "precise_metronome/beats")
-        beatChannel.setStreamHandler(object : EventChannel.StreamHandler {
-            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                beatSink = events
+        beatChannel.setStreamHandler(
+            streamHandler {
+                beatSink = it
                 updateBeatPolling()
             }
-            override fun onCancel(arguments: Any?) {
-                beatSink = null
-                updateBeatPolling()
-            }
-        })
+        )
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
         rampChannel.setStreamHandler(null)
         rampSink = null
-        stopRampPolling()
         beatChannel.setStreamHandler(null)
         beatSink = null
-        stopBeatPolling()
         teardownEngine()
-        if (backgroundEnabled) {
-            stopForegroundService()
-            backgroundEnabled = false
-        }
+        stopBackgroundPlayback()
     }
+
+    private fun streamHandler(onSink: (EventChannel.EventSink?) -> Unit) =
+        object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) =
+                onSink(events)
+
+            override fun onCancel(arguments: Any?) = onSink(null)
+        }
+
+    // ------------------------------------------------------------- dispatch
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         try {
             when (call.method) {
-                "init" -> {
-                    if (engineHandle == 0L) {
-                        engineHandle = NativeBridge.nativeCreate()
-                    }
-                    val ok = NativeBridge.nativeInit(engineHandle)
-                    if (ok) {
-                        result.success(null)
-                    } else {
-                        NativeBridge.nativeDestroy(engineHandle)
-                        engineHandle = 0L
-                        result.error(
-                            "init_failed",
-                            "Oboe failed to open an audio stream.",
-                            null
-                        )
-                    }
-                }
-
-                "start" -> {
-                    stopRampPolling()
-                    setEnginePlaying(true)
-                    val initialDelayMs =
-                        call.argument<Number>("initialDelayMs")?.toLong() ?: 0L
-                    requireHandle(result)?.let {
-                        NativeBridge.nativeStart(it, initialDelayMs)
-                        result.success(null)
-                    }
-                }
-
-                "startRamp" -> {
-                    val initialDelayMs =
-                        call.argument<Number>("initialDelayMs")?.toLong() ?: 0L
-                    val startBpm = call.argument<Number>("startBpm")?.toDouble()
-                    val goalBpm = call.argument<Number>("goalBpm")?.toDouble()
-                    val stopAtGoal = call.argument<Boolean>("stopAtGoal") ?: true
-                    val stepBpm = call.argument<Number>("stepBpm")?.toDouble()
-                    val barsPerStep = call.argument<Number>("barsPerStep")?.toInt()
-                    // A timed step: the step length in ms, 0 for bars.
-                    val stepMs = call.argument<Number>("stepMs")?.toLong() ?: 0L
-                    val returnToStart =
-                        call.argument<Boolean>("returnToStart") ?: false
-                    if (startBpm == null || goalBpm == null ||
-                        stepBpm == null || barsPerStep == null
-                    ) {
-                        result.error(
-                            "bad_arguments",
-                            "startBpm, goalBpm, stepBpm: Double, barsPerStep: Int required",
-                            null
-                        )
-                        return
-                    }
-                    if (barsPerStep < 1 && stepMs < 1) {
-                        result.error(
-                            "bad_arguments",
-                            "barsPerStep >= 1 or stepMs >= 1 required",
-                            null
-                        )
-                        return
-                    }
-                    requireHandle(result)?.let {
-                        NativeBridge.nativeStartRamp(
-                            it, initialDelayMs, startBpm, goalBpm, stopAtGoal,
-                            stepBpm, barsPerStep, stepMs, returnToStart
-                        )
-                        startRampPolling()
-                        setEnginePlaying(true)
-                        result.success(null)
-                    }
-                }
-
-                "nudge" -> {
-                    val deltaMs = call.argument<Number>("deltaMs")?.toLong()
-                    if (deltaMs == null) {
-                        result.error("bad_arguments", "deltaMs: Int required", null)
-                        return
-                    }
-                    requireHandle(result)?.let {
-                        NativeBridge.nativeNudge(it, deltaMs)
-                        result.success(null)
-                    }
-                }
-
-                "stop" -> {
-                    stopRampPolling()
-                    setEnginePlaying(false)
-                    requireHandle(result)?.let {
-                        NativeBridge.nativeStop(it)
-                        result.success(null)
-                    }
-                }
-
-                "setTempo" -> {
-                    val bpm = call.argument<Double>("bpm")
-                    if (bpm == null) {
-                        result.error("bad_arguments", "bpm: Double required", null)
-                        return
-                    }
-                    requireHandle(result)?.let {
-                        NativeBridge.nativeSetTempo(it, bpm)
-                        result.success(null)
-                    }
-                }
-
-                "setTimeSignature" -> {
-                    val beatsPerBar = call.argument<Int>("beatsPerBar")
-                    val pattern = call.argument<List<Boolean>>("accentPattern")
-                    if (beatsPerBar == null || pattern == null) {
-                        result.error(
-                            "bad_arguments",
-                            "beatsPerBar: Int, accentPattern: List<Boolean> required",
-                            null
-                        )
-                        return
-                    }
-                    requireHandle(result)?.let {
-                        NativeBridge.nativeSetTimeSignature(
-                            it,
-                            beatsPerBar,
-                            pattern.toBooleanArray()
-                        )
-                        result.success(null)
-                    }
-                }
-
-                "setAccentPattern" -> {
-                    val pattern = call.argument<List<Boolean>>("accentPattern")
-                    if (pattern == null) {
-                        result.error(
-                            "bad_arguments",
-                            "accentPattern: List<Boolean> required",
-                            null
-                        )
-                        return
-                    }
-                    requireHandle(result)?.let {
-                        NativeBridge.nativeSetAccentPattern(it, pattern.toBooleanArray())
-                        result.success(null)
-                    }
-                }
-
-                "setSubdivision" -> {
-                    val ppb = call.argument<Int>("pulsesPerBeat")
-                    if (ppb == null) {
-                        result.error(
-                            "bad_arguments",
-                            "pulsesPerBeat: Int required",
-                            null
-                        )
-                        return
-                    }
-                    requireHandle(result)?.let {
-                        NativeBridge.nativeSetSubdivision(it, ppb)
-                        result.success(null)
-                    }
-                }
-
-                "setVoice" -> {
-                    val voice = call.argument<String>("voice")
-                    val idx = when (voice) {
-                        "tone" -> 0
-                        "click" -> 1
-                        "wood" -> 2
-                        "mechanical" -> 3
-                        "blip" -> 4
-                        else -> {
-                            result.error(
-                                "bad_arguments",
-                                "voice must be 'tone', 'click', 'wood', " +
-                                    "'mechanical', or 'blip'",
-                                null
-                            )
-                            return
-                        }
-                    }
-                    requireHandle(result)?.let {
-                        NativeBridge.nativeSetVoice(it, idx)
-                        result.success(null)
-                    }
-                }
-
-                "setBeatEvents" -> {
-                    val enabled = call.argument<Boolean>("enabled") ?: false
-                    val includeSub = call.argument<Boolean>("includeSubdivisions") ?: false
-                    requireHandle(result)?.let {
-                        NativeBridge.nativeSetBeatEvents(it, enabled, includeSub)
-                        beatEventsEnabled = enabled
-                        beatIncludeSub = includeSub
-                        updateBeatPolling()
-                        result.success(null)
-                    }
-                }
-
-                "setVolume" -> {
-                    val volume = call.argument<Double>("volume")
-                    if (volume == null) {
-                        result.error("bad_arguments", "volume: Double required", null)
-                        return
-                    }
-                    requireHandle(result)?.let {
-                        NativeBridge.nativeSetVolume(it, volume)
-                        result.success(null)
-                    }
-                }
-
-                "enableBackgroundPlayback" -> {
-                    val android = call.argument<Map<String, Any?>>("android")
-                    startForegroundService(android)
-                    backgroundEnabled = true
-                    result.success(null)
-                }
-
-                "disableBackgroundPlayback" -> {
-                    if (backgroundEnabled) {
-                        stopForegroundService()
-                        backgroundEnabled = false
-                    }
-                    result.success(null)
-                }
-
-                "dispose" -> {
-                    teardownEngine()
-                    if (backgroundEnabled) {
-                        stopForegroundService()
-                        backgroundEnabled = false
-                    }
-                    result.success(null)
-                }
-
+                "init" -> init(result)
+                "start" -> start(call, result)
+                "startRamp" -> startRamp(call, result)
+                "nudge" -> nudge(call, result)
+                "stop" -> stop(result)
+                "setTempo" -> setTempo(call, result)
+                "setTimeSignature" -> setTimeSignature(call, result)
+                "setAccentPattern" -> setAccentPattern(call, result)
+                "setSubdivision" -> setSubdivision(call, result)
+                "setVoice" -> setVoice(call, result)
+                "setBeatEvents" -> setBeatEvents(call, result)
+                "setVolume" -> setVolume(call, result)
+                "enableBackgroundPlayback" -> enableBackgroundPlayback(call, result)
+                "disableBackgroundPlayback" -> disableBackgroundPlayback(result)
+                "dispose" -> dispose(result)
                 else -> result.notImplemented()
             }
         } catch (e: Throwable) {
-            result.error(
-                "unexpected_error",
-                e.message ?: e::class.java.simpleName,
-                null
-            )
+            result.error("unexpected_error", e.message ?: e::class.java.simpleName, null)
         }
     }
 
+    /** The engine handle, or null after reporting `not_initialized`. */
     private fun requireHandle(result: MethodChannel.Result): Long? {
         if (engineHandle == 0L) {
             result.error("not_initialized", "Call init() first.", null)
@@ -345,6 +130,179 @@ class PreciseMetronomePlugin :
         }
         return engineHandle
     }
+
+    private fun badArguments(result: MethodChannel.Result, expected: String) {
+        result.error("bad_arguments", "$expected required", null)
+    }
+
+    private fun MethodCall.doubleArg(name: String) = argument<Number>(name)?.toDouble()
+    private fun MethodCall.intArg(name: String) = argument<Number>(name)?.toInt()
+    private fun MethodCall.longArg(name: String) = argument<Number>(name)?.toLong()
+    private fun MethodCall.boolArg(name: String) = argument<Boolean>(name)
+    private fun MethodCall.patternArg() =
+        argument<List<Boolean>>("accentPattern")?.toBooleanArray()
+
+    // -------------------------------------------------------------- methods
+
+    private fun init(result: MethodChannel.Result) {
+        if (engineHandle == 0L) engineHandle = NativeBridge.nativeCreate()
+        if (NativeBridge.nativeInit(engineHandle)) {
+            result.success(null)
+            return
+        }
+        NativeBridge.nativeDestroy(engineHandle)
+        engineHandle = 0L
+        result.error("init_failed", "Oboe failed to open an audio stream.", null)
+    }
+
+    private fun start(call: MethodCall, result: MethodChannel.Result) {
+        val handle = requireHandle(result) ?: return
+        stopRampPolling()
+        setEnginePlaying(true)
+        NativeBridge.nativeStart(handle, call.longArg("initialDelayMs") ?: 0L)
+        result.success(null)
+    }
+
+    private fun startRamp(call: MethodCall, result: MethodChannel.Result) {
+        val startBpm = call.doubleArg("startBpm")
+        val goalBpm = call.doubleArg("goalBpm")
+        val stepBpm = call.doubleArg("stepBpm")
+        val barsPerStep = call.intArg("barsPerStep")
+        if (startBpm == null || goalBpm == null || stepBpm == null || barsPerStep == null) {
+            badArguments(result, "startBpm, goalBpm, stepBpm: Double, barsPerStep: Int")
+            return
+        }
+        // A timed step: the step length in ms, 0 for bars.
+        val stepMs = call.longArg("stepMs") ?: 0L
+        if (barsPerStep < 1 && stepMs < 1) {
+            badArguments(result, "barsPerStep >= 1 or stepMs >= 1")
+            return
+        }
+        val handle = requireHandle(result) ?: return
+        NativeBridge.nativeStartRamp(
+            handle,
+            call.longArg("initialDelayMs") ?: 0L,
+            startBpm,
+            goalBpm,
+            call.boolArg("stopAtGoal") ?: true,
+            stepBpm,
+            barsPerStep,
+            stepMs,
+            call.boolArg("returnToStart") ?: false
+        )
+        startRampPolling()
+        setEnginePlaying(true)
+        result.success(null)
+    }
+
+    private fun nudge(call: MethodCall, result: MethodChannel.Result) {
+        val deltaMs = call.longArg("deltaMs") ?: return badArguments(result, "deltaMs: Int")
+        val handle = requireHandle(result) ?: return
+        NativeBridge.nativeNudge(handle, deltaMs)
+        result.success(null)
+    }
+
+    private fun stop(result: MethodChannel.Result) {
+        val handle = requireHandle(result) ?: return
+        stopRampPolling()
+        setEnginePlaying(false)
+        NativeBridge.nativeStop(handle)
+        result.success(null)
+    }
+
+    private fun setTempo(call: MethodCall, result: MethodChannel.Result) {
+        val bpm = call.doubleArg("bpm") ?: return badArguments(result, "bpm: Double")
+        val handle = requireHandle(result) ?: return
+        NativeBridge.nativeSetTempo(handle, bpm)
+        result.success(null)
+    }
+
+    private fun setTimeSignature(call: MethodCall, result: MethodChannel.Result) {
+        val beatsPerBar = call.intArg("beatsPerBar")
+        val pattern = call.patternArg()
+        if (beatsPerBar == null || pattern == null) {
+            badArguments(result, "beatsPerBar: Int, accentPattern: List<Boolean>")
+            return
+        }
+        val handle = requireHandle(result) ?: return
+        NativeBridge.nativeSetTimeSignature(handle, beatsPerBar, pattern)
+        result.success(null)
+    }
+
+    private fun setAccentPattern(call: MethodCall, result: MethodChannel.Result) {
+        val pattern = call.patternArg()
+            ?: return badArguments(result, "accentPattern: List<Boolean>")
+        val handle = requireHandle(result) ?: return
+        NativeBridge.nativeSetAccentPattern(handle, pattern)
+        result.success(null)
+    }
+
+    private fun setSubdivision(call: MethodCall, result: MethodChannel.Result) {
+        val pulsesPerBeat = call.intArg("pulsesPerBeat")
+            ?: return badArguments(result, "pulsesPerBeat: Int")
+        val handle = requireHandle(result) ?: return
+        NativeBridge.nativeSetSubdivision(handle, pulsesPerBeat)
+        result.success(null)
+    }
+
+    private fun setVoice(call: MethodCall, result: MethodChannel.Result) {
+        val voice = call.argument<String>("voice")
+            ?: return badArguments(result, "voice: String")
+        val handle = requireHandle(result) ?: return
+        // The native synth owns the list of voice names.
+        if (!NativeBridge.nativeSetVoice(handle, voice)) {
+            badArguments(result, "voice: a MetronomeVoice name")
+            return
+        }
+        result.success(null)
+    }
+
+    private fun setBeatEvents(call: MethodCall, result: MethodChannel.Result) {
+        val handle = requireHandle(result) ?: return
+        val enabled = call.boolArg("enabled") ?: false
+        val includeSubdivisions = call.boolArg("includeSubdivisions") ?: false
+        NativeBridge.nativeSetBeatEvents(handle, enabled, includeSubdivisions)
+        beatEventsEnabled = enabled
+        updateBeatPolling()
+        result.success(null)
+    }
+
+    private fun setVolume(call: MethodCall, result: MethodChannel.Result) {
+        val volume = call.doubleArg("volume") ?: return badArguments(result, "volume: Double")
+        val handle = requireHandle(result) ?: return
+        NativeBridge.nativeSetVolume(handle, volume)
+        result.success(null)
+    }
+
+    private fun enableBackgroundPlayback(call: MethodCall, result: MethodChannel.Result) {
+        startForegroundService(call.argument<Map<String, Any?>>("android"))
+        backgroundEnabled = true
+        result.success(null)
+    }
+
+    private fun disableBackgroundPlayback(result: MethodChannel.Result) {
+        stopBackgroundPlayback()
+        result.success(null)
+    }
+
+    private fun dispose(result: MethodChannel.Result) {
+        teardownEngine()
+        stopBackgroundPlayback()
+        result.success(null)
+    }
+
+    private fun teardownEngine() {
+        stopRampPolling()
+        setEnginePlaying(false)
+        stopBeatPolling()
+        if (engineHandle != 0L) {
+            NativeBridge.nativeStop(engineHandle)
+            NativeBridge.nativeDestroy(engineHandle)
+            engineHandle = 0L
+        }
+    }
+
+    // --------------------------------------------------------- ramp events
 
     private fun startRampPolling() {
         lastRampStep = 0
@@ -371,9 +329,7 @@ class PreciseMetronomePlugin :
         if (step != lastRampStep || finished != lastRampFinished) {
             lastRampStep = step
             lastRampFinished = finished
-            rampSink?.success(
-                mapOf("stepIndex" to step, "bpm" to bpm, "finished" to finished)
-            )
+            rampSink?.success(mapOf("stepIndex" to step, "bpm" to bpm, "finished" to finished))
         }
         if (finished) {
             stopRampPolling()
@@ -381,9 +337,11 @@ class PreciseMetronomePlugin :
             val session = playSession
             mainHandler.postDelayed({
                 if (playSession == session) setEnginePlaying(false)
-            }, 250L)
+            }, RAMP_DRAIN_MS)
         }
     }
+
+    // --------------------------------------------------------- beat events
 
     private fun setEnginePlaying(playing: Boolean) {
         if (playing) playSession++
@@ -412,8 +370,7 @@ class PreciseMetronomePlugin :
         if (engineHandle == 0L) return
         val sink = beatSink ?: return
         val flat = NativeBridge.nativeDrainBeatEvents(engineHandle)
-        var i = 0
-        while (i + 3 < flat.size) {
+        for (i in flat.indices step 4) {
             sink.success(
                 mapOf(
                     "bar" to flat[i],
@@ -422,40 +379,29 @@ class PreciseMetronomePlugin :
                     "accent" to (flat[i + 3] != 0)
                 )
             )
-            i += 4
         }
     }
 
-    private fun teardownEngine() {
-        stopRampPolling()
-        setEnginePlaying(false)
-        stopBeatPolling()
-        if (engineHandle != 0L) {
-            NativeBridge.nativeStop(engineHandle)
-            NativeBridge.nativeDestroy(engineHandle)
-            engineHandle = 0L
-        }
-    }
+    // --------------------------------------------------- background service
 
-    private fun startForegroundService(android: Map<String, Any?>?) {
+    private fun startForegroundService(config: Map<String, Any?>?) {
         val intent = Intent(appContext, MetronomeService::class.java).apply {
             putExtra(
                 MetronomeService.EXTRA_TITLE,
-                android?.get("title") as? String ?: "Metronome running"
+                config?.get("title") as? String ?: "Metronome running"
             )
-            putExtra(MetronomeService.EXTRA_BODY, android?.get("body") as? String)
+            putExtra(MetronomeService.EXTRA_BODY, config?.get("body") as? String)
             putExtra(
                 MetronomeService.EXTRA_CHANNEL_ID,
-                android?.get("channelId") as? String
-                    ?: MetronomeService.DEFAULT_CHANNEL_ID
+                config?.get("channelId") as? String ?: MetronomeService.DEFAULT_CHANNEL_ID
             )
             putExtra(
                 MetronomeService.EXTRA_CHANNEL_NAME,
-                android?.get("channelName") as? String ?: "Metronome"
+                config?.get("channelName") as? String ?: "Metronome"
             )
             putExtra(
                 MetronomeService.EXTRA_NOTIFICATION_ID,
-                (android?.get("notificationId") as? Number)?.toInt()
+                (config?.get("notificationId") as? Number)?.toInt()
                     ?: MetronomeService.DEFAULT_NOTIFICATION_ID
             )
         }
@@ -466,13 +412,16 @@ class PreciseMetronomePlugin :
         }
     }
 
-    private fun stopForegroundService() {
-        val intent = Intent(appContext, MetronomeService::class.java)
-        appContext.stopService(intent)
+    private fun stopBackgroundPlayback() {
+        if (!backgroundEnabled) return
+        appContext.stopService(Intent(appContext, MetronomeService::class.java))
+        backgroundEnabled = false
     }
 
     private companion object {
         const val RAMP_POLL_MS = 20L
         const val BEAT_POLL_MS = 10L
+        /** How long the last clicks of a finished ramp get to ring out. */
+        const val RAMP_DRAIN_MS = 250L
     }
 }

@@ -42,7 +42,8 @@ internal object NativeBridge {
         accentPattern: BooleanArray
     )
     @JvmStatic external fun nativeSetSubdivision(handle: Long, pulsesPerBeat: Int)
-    @JvmStatic external fun nativeSetVoice(handle: Long, voiceIndex: Int)
+    /** Selects a voice by its Dart name; false for an unknown name. */
+    @JvmStatic external fun nativeSetVoice(handle: Long, voice: String): Boolean
     @JvmStatic external fun nativeSetVolume(handle: Long, volume: Double)
 
     @JvmStatic external fun nativeSetBeatEvents(
