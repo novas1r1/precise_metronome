@@ -112,6 +112,8 @@ class PreciseMetronomePlugin :
                 "setVoice" -> setVoice(call, result)
                 "setBeatEvents" -> setBeatEvents(call, result)
                 "setVolume" -> setVolume(call, result)
+                "setGapPlan" -> setGapPlan(call, result)
+                "clearGapPlan" -> clearGapPlan(call, result)
                 "enableBackgroundPlayback" -> enableBackgroundPlayback(call, result)
                 "disableBackgroundPlayback" -> disableBackgroundPlayback(result)
                 "dispose" -> dispose(result)
@@ -274,6 +276,33 @@ class PreciseMetronomePlugin :
         result.success(null)
     }
 
+    private fun setGapPlan(call: MethodCall, result: MethodChannel.Result) {
+        val segment = call.intArg("segment")
+        val from = call.intArg("from")
+        val silent = call.argument<List<Boolean>>("silent")?.toBooleanArray()
+        if (segment == null || from == null || silent == null) {
+            badArguments(result, "segment: Int, from: Int, silent: List<Boolean>")
+            return
+        }
+        val handle = requireHandle(result) ?: return
+        if (!NativeBridge.nativeSetGapBars(handle, segment, from, silent)) {
+            result.error(
+                "gap_plan_busy",
+                "The audio thread has not taken in earlier gap bars yet.",
+                null
+            )
+            return
+        }
+        result.success(null)
+    }
+
+    private fun clearGapPlan(call: MethodCall, result: MethodChannel.Result) {
+        val segment = call.intArg("segment") ?: return badArguments(result, "segment: Int")
+        val handle = requireHandle(result) ?: return
+        NativeBridge.nativeClearGapPlan(handle, segment)
+        result.success(null)
+    }
+
     private fun enableBackgroundPlayback(call: MethodCall, result: MethodChannel.Result) {
         startForegroundService(call.argument<Map<String, Any?>>("android"))
         backgroundEnabled = true
@@ -370,13 +399,17 @@ class PreciseMetronomePlugin :
         if (engineHandle == 0L) return
         val sink = beatSink ?: return
         val flat = NativeBridge.nativeDrainBeatEvents(engineHandle)
-        for (i in flat.indices step 4) {
+        for (i in flat.indices step BEAT_EVENT_FIELDS) {
             sink.success(
                 mapOf(
                     "bar" to flat[i],
                     "beat" to flat[i + 1],
                     "pulse" to flat[i + 2],
-                    "accent" to (flat[i + 3] != 0)
+                    "accent" to (flat[i + 3] != 0),
+                    "muted" to (flat[i + 4] != 0),
+                    "landing" to (flat[i + 5] != 0),
+                    "gapSegment" to flat[i + 6],
+                    "gapBar" to flat[i + 7]
                 )
             )
         }
@@ -421,6 +454,8 @@ class PreciseMetronomePlugin :
     private companion object {
         const val RAMP_POLL_MS = 20L
         const val BEAT_POLL_MS = 10L
+        /** Ints per event in nativeDrainBeatEvents. */
+        const val BEAT_EVENT_FIELDS = 8
         /** How long the last clicks of a finished ramp get to ring out. */
         const val RAMP_DRAIN_MS = 250L
     }

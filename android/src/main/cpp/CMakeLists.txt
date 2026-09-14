@@ -9,6 +9,7 @@ find_package(oboe REQUIRED CONFIG)
 
 add_library(precise_metronome SHARED
     metronome_engine.cpp
+    gap_plan.cpp
     click_synth.cpp
     jni_bridge.cpp
 )

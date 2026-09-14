@@ -21,9 +21,17 @@ flutter run
 | Time signature picker, accent grid | `setTimeSignature` / `setAccentPattern` |
 | Subdivision picker (♩ ♪♪ ♪³ ♬♬) | `setSubdivision` |
 | Settings sheet: volume, and all five click voices with a line of description each | `setVolume`, `setVoice` |
+| Gap trainer: fixed, random and ladder patterns, the bar strip, and the badge that reads `click` / `silent` / `landing` | `GapPattern` + `setGapPattern`, `BeatEvent.muted` / `landing`, `gapBarAt` for the bars coming up |
+| Gap presets, five built in and your own on top | `GapSettings` / `GapPreset` in `lib/gap_settings.dart`, stored with `shared_preferences` |
+| Playing on with the screen off | `enableBackgroundPlayback` while the metronome runs, released when it stops |
 
 Turning dynamic mode off starts a plain metronome (`start()`) at the tempo in
 the stepper, which is relabelled "Tempo" there.
+
+Dynamic mode and the gap trainer take turns: switching one on switches the
+other off, and while one of them is playing the other's switch waits. A gap
+hides the beat indicator and never fires the dial's ring, so a silent bar
+feels like silence rather than a click with the sound turned down.
 
 ## Structure
 
@@ -33,12 +41,34 @@ the stepper, which is relabelled "Tempo" there.
   `docs/design_system/components/core/`.
 - `lib/accel_metronome.dart` — the only place that talks to `Metronome`;
   republishes the native streams as something the widgets can paint.
+- `lib/gap_settings.dart` — what the gap trainer plays by, what a preset
+  stores, and the five presets Accel ships with.
+- `lib/settings_store.dart` — the last settings and your own presets, as
+  two JSON blobs in `shared_preferences`.
 - `lib/metronome_screen.dart` — owns the model and lays the screen out.
 - `lib/screen/` — the screen's sections (header, dial, meter controls,
-  tempo and dynamic-mode cards, transport bar, settings sheet), one widget
-  per file.
+  tempo, dynamic-mode and gap-trainer cards, transport bar, settings
+  sheet), one widget per file.
 - `lib/formatting.dart` — the tempo and clock formatting the screen and
   the model share.
+
+## Remembering, and playing on
+
+Every setting on screen is written a moment after it changes, and read back
+on the next launch: tempo, meter, accents, subdivision, sound, volume, both
+trainers and their options. Anything a store cannot supply keeps its
+default, so an older or half-written store still starts the app.
+
+While the metronome plays, Accel holds background playback, and releases it
+as soon as it stops. On Android that is the package's foreground service
+with its notification; the process then survives the screen going off. Two
+host-project details are not in this repository, because `example/android`
+and `example/ios` are generated:
+
+- **iOS** needs `UIBackgroundModes` with `audio` in `Runner/Info.plist`.
+- **Android 13 and newer** hides the notification until the app asks for
+  the `POST_NOTIFICATIONS` permission, which Accel does not do yet. The
+  service, and the click, run either way.
 
 ## Where it departs from the design system
 

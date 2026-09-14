@@ -6,6 +6,7 @@ import 'accel_metronome.dart';
 import 'screen/backdrop.dart';
 import 'screen/dynamic_mode_card.dart';
 import 'screen/engine_error_view.dart';
+import 'screen/gap_trainer_card.dart';
 import 'screen/layout.dart';
 import 'screen/meter_controls.dart';
 import 'screen/metronome_header.dart';
@@ -94,6 +95,9 @@ class _MetronomeView extends StatelessWidget {
                     descending: descending,
                     stepBpm: m.stepBpm,
                     nextTempo: m.nextTempo,
+                    gapTrainer: m.gapEnabled,
+                    gapPhase: m.gapPhase,
+                    silentBarsLeft: m.silentBarsLeft,
                     onOpenSettings: m.isReady
                         ? () => SettingsSheet.show(context, m)
                         : null,
@@ -151,7 +155,6 @@ class _Sections extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final m = metronome;
-    final beat = m.lastBeat;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(
@@ -164,9 +167,10 @@ class _Sections extends StatelessWidget {
         TempoDial(
           tempo: m.tempo,
           beatTick: m.beatTick,
-          beatIndex: beat?.beatIndex,
+          // Both stay dark through a gap that hides the beat.
+          beatIndex: m.indicatorBeat,
           beatsPerBar: m.beatsPerBar,
-          accent: beat?.accent ?? false,
+          accent: m.indicatorAccent,
           direction: m.direction,
           running: m.isPlaying,
           barsPerStep: m.barsPerStep,
@@ -197,6 +201,8 @@ class _Sections extends StatelessWidget {
         ),
         const SizedBox(height: 16),
         DynamicModeCard(metronome: m),
+        const SizedBox(height: 16),
+        GapTrainerCard(metronome: m),
       ],
     );
   }

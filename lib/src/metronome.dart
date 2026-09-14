@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:flutter/services.dart';
 
 import 'background_config.dart';
 import 'beat_event.dart';
+import 'gap_pattern.dart';
 import 'subdivision.dart';
 import 'tempo_ramp.dart';
 import 'time_signature.dart';
@@ -49,10 +51,40 @@ class Metronome {
   StreamSubscription<dynamic>? _beatSubscription;
   late final StreamController<BeatEvent> _beatController =
       StreamController<BeatEvent>.broadcast(
-    onListen: _enableBeatEvents,
-    onCancel: _disableBeatEvents,
+    onListen: _syncBeatEvents,
+    onCancel: _syncBeatEvents,
   );
   bool _includeSubdivisions = false;
+
+  // Gap pattern. Dart decides the bars (GapPatternGenerator) and hands them
+  // to the engine in segments, one per run of the pattern, numbered
+  // upwards. The engine starts a segment on the first bar it schedules
+  // after the segment arrived, and every beat event tells which segment
+  // and which bar of it is playing. Downbeats drive topping the bars up,
+  // and starting over when the engine has lost a segment.
+  GapPattern? _gapPattern;
+  int _gapSegment = 0;
+  GapPatternGenerator? _gapBars;
+
+  /// Bars of the newest segment the engine has; later ones are still to be
+  /// sent.
+  int _gapSent = 0;
+
+  /// The segment whose bars are on their way to the engine, if any.
+  int? _gapSending;
+
+  /// The session bar the newest segment took effect on, and whether that
+  /// bar was a landing. `null` until a beat event shows the engine started
+  /// the segment.
+  int? _gapFirstBar;
+  bool _gapFirstBarLanding = false;
+
+  /// The engine is kept supplied with gap bars for at least this long
+  /// ahead of the bar playing, and at least [_gapMinBarsAhead] bars. The
+  /// most that asks for is 27 bars (one beat at 400 BPM), well inside the
+  /// 64 bars the native plan keeps.
+  static const Duration _gapLookahead = Duration(seconds: 4);
+  static const int _gapMinBarsAhead = 8;
 
   double _bpm = 120.0;
   TimeSignature _timeSignature = TimeSignature(4, 4);
@@ -89,8 +121,9 @@ class Metronome {
   /// moment it is heard (typically 2–10 ms behind the audio on iOS, 10–25 ms
   /// on Android — well below what the eye can notice).
   ///
-  /// Native emission is switched on while this stream has listeners and
-  /// off again when the last one cancels, so an idle app pays nothing.
+  /// Native emission is switched on while this stream has listeners, or
+  /// while a gap pattern is set (see [setGapPattern]), and off again after
+  /// that, so an idle app pays nothing.
   /// By default only main beats are sent; see [setBeatEventOptions] to
   /// include subdivision pulses.
   ///
@@ -107,7 +140,7 @@ class Metronome {
   Future<void> setBeatEventOptions({required bool includeSubdivisions}) async {
     _assertReady();
     _includeSubdivisions = includeSubdivisions;
-    if (_beatController.hasListener) {
+    if (_beatSubscription != null) {
       await _pushBeatEventOptions();
     }
   }
@@ -169,7 +202,7 @@ class Metronome {
     // user sets anything.
     await _pushState();
     // A listener may have subscribed to `beats` before init().
-    if (_beatController.hasListener) await _enableBeatEvents();
+    await _syncBeatEvents();
   }
 
   /// Starts the metronome from bar position zero.
@@ -189,6 +222,7 @@ class Metronome {
         'must not be negative',
       );
     }
+    await _prepareGapForStart();
     await _channel.invokeMethod<void>('start', {
       'initialDelayMs': initialDelay.inMilliseconds,
     });
@@ -241,6 +275,7 @@ class Metronome {
       // but keep the metronome usable.
       onError: _rampController.addError,
     );
+    await _prepareGapForStart();
     await _channel.invokeMethod<void>('startRamp', {
       'initialDelayMs': initialDelay.inMilliseconds,
       ...ramp.toMap(),
@@ -476,6 +511,63 @@ class Metronome {
     await _channel.invokeMethod<void>('setVolume', {'volume': volume});
   }
 
+  /// The gap pattern set with [setGapPattern], or `null` when every bar
+  /// clicks.
+  GapPattern? get gapPattern => _gapPattern;
+
+  /// Silences bars by [pattern] while the clock keeps counting, or lets
+  /// every bar click again when [pattern] is `null`.
+  ///
+  /// The pattern starts from its beginning, with an audible bar, whenever
+  /// the metronome starts ([start] or [startRamp]) and whenever the pattern
+  /// is changed while playing. A change takes effect on the first bar the
+  /// engine has not scheduled yet: normally the next bar, or the one after
+  /// it when the next downbeat is only a few milliseconds away. Setting a
+  /// pattern equal to the current one changes nothing.
+  ///
+  /// The bars are decided in Dart and handed to the native engine several
+  /// seconds ahead. The engine does the silencing, so the click after a
+  /// gap lands exactly on the grid. Should the engine ever run out of
+  /// planned bars, for example because Dart was held up for a long time,
+  /// those bars click rather than stay silent, and the pattern starts over.
+  ///
+  /// [beats] marks silenced pulses with [BeatEvent.muted] and the first
+  /// audible bar after a gap with [BeatEvent.landing]. While a pattern is
+  /// set, native beat events stay switched on even without a listener,
+  /// because the hand-off relies on them.
+  Future<void> setGapPattern(GapPattern? pattern) async {
+    _assertReady();
+    if (pattern == _gapPattern) return;
+    _gapPattern = pattern;
+    await _syncBeatEvents();
+    if (_isPlaying) await _beginGapSegment();
+  }
+
+  /// Bar [barIndex] of the running session as the gap pattern plays it:
+  /// whether it is silent, and whether it is a landing.
+  ///
+  /// Bars count like [BeatEvent.barIndex]. Future bars are answered too,
+  /// so a UI can preview what comes next. Returns `null` while stopped,
+  /// without a gap pattern, and for bars before the pattern took effect,
+  /// which includes every bar until the engine has started a pattern that
+  /// was set a moment ago.
+  GapBar? gapBarAt(int barIndex) {
+    final bars = _gapBars;
+    final firstBar = _gapFirstBar;
+    if (!_isPlaying ||
+        bars == null ||
+        firstBar == null ||
+        barIndex < firstBar) {
+      return null;
+    }
+    final bar = bars.barAt(barIndex - firstBar);
+    return GapBar(
+      index: barIndex,
+      silent: bar.silent,
+      landing: barIndex == firstBar ? _gapFirstBarLanding : bar.landing,
+    );
+  }
+
   /// Enables background playback.
   ///
   /// On iOS this activates the audio session's playback category and the
@@ -530,23 +622,29 @@ class Metronome {
 
   // ---- internals ----
 
-  Future<void> _enableBeatEvents() async {
-    if (_disposed || !_initialized) return;
-    _beatSubscription ??= _beatChannel.receiveBroadcastStream().listen(
-      _onBeatEvent,
-      onError: _beatController.addError,
-    );
-    await _pushBeatEventOptions();
-  }
+  /// Native beat events are needed by a listener on [beats], and by a gap
+  /// pattern, whose hand-off they drive.
+  bool get _wantsBeatEvents =>
+      _beatController.hasListener || _gapPattern != null;
 
-  Future<void> _disableBeatEvents() async {
-    await _beatSubscription?.cancel();
-    _beatSubscription = null;
-    if (_disposed || !_initialized) return;
-    await _channel.invokeMethod<void>('setBeatEvents', {
-      'enabled': false,
-      'includeSubdivisions': _includeSubdivisions,
-    });
+  /// Switches native beat events on or off to match [_wantsBeatEvents].
+  Future<void> _syncBeatEvents() async {
+    if (_wantsBeatEvents) {
+      if (_disposed || !_initialized || _beatSubscription != null) return;
+      _beatSubscription = _beatChannel.receiveBroadcastStream().listen(
+        _onBeatEvent,
+        onError: _beatController.addError,
+      );
+      await _pushBeatEventOptions();
+    } else if (_beatSubscription != null) {
+      await _beatSubscription?.cancel();
+      _beatSubscription = null;
+      if (_disposed || !_initialized) return;
+      await _channel.invokeMethod<void>('setBeatEvents', {
+        'enabled': false,
+        'includeSubdivisions': _includeSubdivisions,
+      });
+    }
   }
 
   Future<void> _pushBeatEventOptions() {
@@ -558,12 +656,120 @@ class Metronome {
 
   void _onBeatEvent(dynamic event) {
     if (event is! Map) return;
-    _beatController.add(BeatEvent(
+    final beat = BeatEvent(
       barIndex: (event['bar'] as num?)?.toInt() ?? 0,
       beatIndex: (event['beat'] as num?)?.toInt() ?? 0,
       pulseIndex: (event['pulse'] as num?)?.toInt() ?? 0,
       accent: event['accent'] == true,
-    ));
+      muted: event['muted'] == true,
+      landing: event['landing'] == true,
+    );
+    // Before forwarding, so listeners already see the plan the beat
+    // belongs to through gapBarAt.
+    if (beat.isDownbeat) {
+      _followGapPlan(
+        beat,
+        segment: (event['gapSegment'] as num?)?.toInt() ?? 0,
+        index: (event['gapBar'] as num?)?.toInt() ?? -1,
+      );
+    }
+    _beatController.add(beat);
+  }
+
+  /// Plays the gap pattern from its beginning in the session about to
+  /// start. Once a pattern has been used, this also runs without one, so
+  /// no segment the engine still holds from before can play.
+  Future<void> _prepareGapForStart() async {
+    if (_gapPattern == null && _gapSegment == 0) return;
+    await _beginGapSegment();
+  }
+
+  /// Starts the gap pattern from its beginning on the next bar the engine
+  /// schedules, or, without a pattern, stops silencing there.
+  Future<void> _beginGapSegment() async {
+    final segment = ++_gapSegment;
+    final pattern = _gapPattern;
+    _gapBars = pattern == null ? null : GapPatternGenerator(pattern);
+    _gapSent = 0;
+    _gapFirstBar = null;
+    _gapFirstBarLanding = false;
+    if (pattern == null) {
+      await _channel.invokeMethod<void>('clearGapPlan', {'segment': segment});
+    } else {
+      await _sendGapBars(until: _gapBarsAhead);
+    }
+  }
+
+  /// Sends bars of the newest segment up to, but not including, [until].
+  /// When the engine refuses them, they are sent again on a later
+  /// downbeat.
+  Future<void> _sendGapBars({required int until}) async {
+    final bars = _gapBars;
+    final segment = _gapSegment;
+    final from = _gapSent;
+    if (bars == null || from >= until || _gapSending == segment) return;
+    _gapSending = segment;
+    try {
+      await _channel.invokeMethod<void>('setGapPlan', {
+        'segment': segment,
+        'from': from,
+        'silent': [for (var i = from; i < until; i++) bars.barAt(i).silent],
+      });
+      if (segment == _gapSegment && until > _gapSent) _gapSent = until;
+    } on PlatformException catch (error) {
+      developer.log(
+        'The engine did not take gap bars $from..${until - 1} of segment '
+        '$segment: ${error.message ?? error.code}',
+        name: 'precise_metronome',
+      );
+    } finally {
+      if (_gapSending == segment) _gapSending = null;
+    }
+  }
+
+  /// Follows the gap plan on every downbeat the engine reports: tops the
+  /// bars up, and starts the pattern over when the engine has lost it.
+  /// [segment] and [index] are the segment, and the bar within it, that
+  /// planned the downbeat's bar.
+  void _followGapPlan(
+    BeatEvent downbeat, {
+    required int segment,
+    required int index,
+  }) {
+    if (!_isPlaying || _gapBars == null) return;
+    if (segment == _gapSegment) {
+      if (index < 0) {
+        developer.log(
+          'The engine ran out of gap bars; the pattern starts over.',
+          name: 'precise_metronome',
+        );
+        unawaited(_beginGapSegment());
+        return;
+      }
+      if (_gapFirstBar == null) {
+        _gapFirstBar = downbeat.barIndex - index;
+        _gapFirstBarLanding = index == 0 && downbeat.landing;
+      }
+      final ahead = _gapBarsAhead;
+      if (_gapSent - index <= ahead ~/ 2) {
+        unawaited(_sendGapBars(until: index + ahead));
+      }
+    } else if (_gapFirstBar != null ||
+        (_gapSent == 0 && _gapSending != _gapSegment)) {
+      // The engine started the newest segment and then dropped it (Android
+      // does after an audio device error), or never got it. Waiting would
+      // leave every bar audible, so the pattern starts over.
+      unawaited(_beginGapSegment());
+    }
+    // Otherwise the engine has the newest segment but not started it yet.
+  }
+
+  /// Bars that cover [_gapLookahead] at the current tempo and meter.
+  int get _gapBarsAhead {
+    final barMicros =
+        Duration.microsecondsPerMinute / _bpm * _timeSignature.beatsPerBar;
+    final bars = (_gapLookahead.inMicroseconds / barMicros).ceil();
+    return bars < _gapMinBarsAhead ? _gapMinBarsAhead : bars;
   }
 
   void _onRampEvent(dynamic event) {

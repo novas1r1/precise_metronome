@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — Gap click trainer
+
+- New `Metronome.setGapPattern(GapPattern?)`: whole bars go silent by a
+  pattern while the clock keeps counting, so the click after a gap lands
+  exactly on the grid. `GapPattern.fixed` alternates click and silent
+  phases, `GapPattern.ladder` grows the gap every few cycles, and
+  `GapPattern.random` silences bars by chance, with a cap on silent bars
+  in a row. A silent bar silences its subdivision pulses too.
+- Bars are decided in Dart (`GapPatternGenerator`) and handed to both
+  native engines in segments, several seconds ahead. The engines silence
+  bars in the scheduler itself. A bar without a plan plays audible, and
+  the pattern starts over.
+- `BeatEvent.muted` marks silenced pulses and `BeatEvent.landing` the
+  first audible bar after a gap. `Metronome.gapBarAt` previews any bar of
+  the running session.
+- While a gap pattern is set, native beat events stay on even without a
+  listener on `Metronome.beats`.
+- Android: after an audio device error the gap pattern starts over.
+
 ## 0.8.0 — Timed ramp steps
 
 - A `TempoRamp` step can now be a stretch of time instead of a bar count.

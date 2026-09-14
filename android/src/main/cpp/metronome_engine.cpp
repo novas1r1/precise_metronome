@@ -190,6 +190,15 @@ void MetronomeEngine::set_volume(double volume) {
     volume_.store(std::clamp(volume, 0.0, 1.0), std::memory_order_relaxed);
 }
 
+bool MetronomeEngine::set_gap_bars(int32_t segment, int32_t from,
+                                   const uint8_t* silent, int32_t count) {
+    return gap_plan_.set_bars(segment, from, silent, count);
+}
+
+void MetronomeEngine::clear_gap_plan(int32_t segment) {
+    gap_plan_.clear(segment);
+}
+
 void MetronomeEngine::set_beat_events(bool enabled, bool include_subdivisions) {
     beat_events_include_sub_.store(include_subdivisions,
                                    std::memory_order_relaxed);
@@ -223,6 +232,9 @@ void MetronomeEngine::onErrorAfterClose(oboe::AudioStream* /*stream*/,
     if (start_stream()) {
         LOGI("Stream reopened at %d Hz", sample_rate_);
     }
+    // A gap pattern starts over after a device error: bars play audible
+    // until Dart notices the dropped segment and sends a new one.
+    gap_plan_.request_restart();
 }
 
 int64_t MetronomeEngine::frames_per_pulse(double bpm,
@@ -334,7 +346,13 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         ramp_return_bpm_ = ramp_current_bpm_;
         ramp_return_pending_ =
             ramp_return_to_start_.load(std::memory_order_relaxed);
+        gap_plan_.reset();
     }
+
+    // Gap bars sent since the last callback. Taken in after the session
+    // reset above, so a segment sent right before start() is still there
+    // for the session's first bar.
+    gap_plan_.apply_commands();
 
     // Subdivision change: snap to a clean beat boundary at the next pulse.
     if (realign_pulse_requested_.exchange(false, std::memory_order_acq_rel)) {
@@ -412,6 +430,8 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         }
 
         while (next_pulse_frame_ < buf_end) {
+            // Decided once per bar, before its first pulse.
+            const GapPlan::Bar gap = gap_plan_.at(bar_index_);
             if (next_pulse_frame_ >= buf_start) {
                 const int offset =
                     static_cast<int>(next_pulse_frame_ - buf_start);
@@ -440,13 +460,23 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
                     const uint32_t w =
                         beat_write_count_.load(std::memory_order_relaxed);
                     beat_ring_[w % kBeatRingSize] = {
-                        bar_index_, beat_index_in_bar_, pulse_index_in_beat_,
-                        (src_ptr == &accent_buf) ? 1 : 0};
+                        bar_index_,
+                        beat_index_in_bar_,
+                        pulse_index_in_beat_,
+                        (src_ptr == &accent_buf) ? 1 : 0,
+                        gap.silent ? 1 : 0,
+                        gap.landing ? 1 : 0,
+                        gap.segment,
+                        gap.index,
+                    };
                     beat_write_count_.store(w + 1, std::memory_order_release);
                 }
 
+                // A silent bar keeps its place in time; it just adds no
+                // click.
                 const auto& src = *src_ptr;
-                const int src_len = static_cast<int>(src.size());
+                const int src_len =
+                    gap.silent ? 0 : static_cast<int>(src.size());
                 if (src_len > 0) {
                     const int fits_in_buffer =
                         std::min(src_len, num_frames - offset);

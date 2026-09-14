@@ -132,6 +132,20 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
             }
             withEngine(result) { $0.setVolume(volume) }
 
+        case "setGapPlan":
+            guard let segment = args["segment"] as? Int,
+                  let from = args["from"] as? Int,
+                  let silent = args["silent"] as? [Bool] else {
+                return result(argError("segment: Int, from: Int, silent: [Bool]"))
+            }
+            withEngine(result) { $0.setGapBars(segment: segment, from: from, silent: silent) }
+
+        case "clearGapPlan":
+            guard let segment = args["segment"] as? Int else {
+                return result(argError("segment: Int"))
+            }
+            withEngine(result) { $0.clearGapPlan(segment: segment) }
+
         case "enableBackgroundPlayback", "disableBackgroundPlayback":
             // Background playback on iOS is the audio session category
             // (`.playback`, set at init) plus `UIBackgroundModes: audio`
@@ -166,6 +180,10 @@ public class PreciseMetronomePlugin: NSObject, FlutterPlugin {
                 "beat": beat.beat,
                 "pulse": beat.pulse,
                 "accent": beat.accent,
+                "muted": beat.muted,
+                "landing": beat.landing,
+                "gapSegment": beat.gapSegment,
+                "gapBar": beat.gapBar,
             ])
         }
         do {

@@ -5,7 +5,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:precise_metronome_example/main.dart';
+import 'package:precise_metronome_example/screen/gap_presets_sheet.dart';
 import 'package:precise_metronome_example/widgets/accel_controls.dart';
+import 'package:precise_metronome_example/widgets/accel_surfaces.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Stand-in for the native engine.
 class _FakeEngine {
@@ -31,6 +34,9 @@ class _FakeEngine {
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
     });
+    // A fresh settings store for every test: the app starts on its
+    // defaults and writes nothing to the device.
+    SharedPreferences.setMockInitialValues({});
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     messenger.setMockMethodCallHandler(_method, (call) async {
@@ -294,7 +300,11 @@ void main() {
     for (final label in ['Tone', 'Click', 'Wood', 'Mechanical', 'Blip']) {
       expect(find.text(label), findsOneWidget, reason: '$label is missing');
     }
-    expect(find.text('Volume'), findsNothing, reason: 'the label is uppercased');
+    expect(
+      find.text('Volume'),
+      findsNothing,
+      reason: 'the label is uppercased',
+    );
     expect(find.text('VOLUME'), findsOneWidget);
 
     engine.calls.clear();
@@ -328,6 +338,167 @@ void main() {
     expect(engine.methods, contains('start'));
     expect(engine.methods, isNot(contains('startRamp')));
   });
+
+  testWidgets('the gap trainer plays a pattern instead of a ramp', (
+    tester,
+  ) async {
+    final engine = _FakeEngine()..install(tester);
+    await tester.pumpWidget(const AccelApp());
+    await tester.pumpAndSettle();
+
+    await _toggleCard(tester, 'Gap trainer');
+    // The two trainers take turns, so the tempo field is a plain tempo now.
+    expect(find.text('TEMPO'), findsOneWidget);
+    expect(find.text('Fixed'), findsOneWidget);
+
+    engine.calls.clear();
+    await tester.tap(find.text('Start'));
+    await tester.pumpAndSettle();
+
+    expect(engine.methods, contains('start'));
+    expect(engine.methods, isNot(contains('startRamp')));
+    final plan = engine.calls.firstWhere((c) => c.method == 'setGapPlan');
+    // Two bars of click, two silent, over the eight bars sent ahead.
+    expect((plan.arguments as Map)['silent'], [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+    ]);
+  });
+
+  testWidgets('a random pattern hides the bars coming up', (tester) async {
+    _FakeEngine().install(tester);
+    await tester.pumpWidget(const AccelApp());
+    await tester.pumpAndSettle();
+
+    await _toggleCard(tester, 'Gap trainer');
+    expect(find.text('click'), findsNWidgets(4), reason: 'fixed 2/2 previews');
+
+    await tester.tap(find.text('Random'));
+    await tester.pumpAndSettle();
+    expect(find.text('?'), findsNWidgets(6));
+    expect(find.text('Chance of silence'.toUpperCase()), findsOneWidget);
+  });
+
+  testWidgets('a silent bar reads on the badge and the status line', (
+    tester,
+  ) async {
+    final engine = _FakeEngine()..install(tester);
+    await tester.pumpWidget(const AccelApp());
+    await tester.pumpAndSettle();
+
+    await _toggleCard(tester, 'Gap trainer');
+    await tester.tap(find.text('Start'));
+    await tester.pumpAndSettle();
+
+    engine.beats!.success({
+      'bar': 2,
+      'beat': 0,
+      'pulse': 0,
+      'accent': true,
+      'muted': true,
+      'landing': false,
+      'gapSegment': 1,
+      'gapBar': 2,
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('Silent — hold the tempo'), findsOneWidget);
+    expect(find.text('silent'), findsOneWidget, reason: 'the header badge');
+
+    engine.beats!.success({
+      'bar': 4,
+      'beat': 0,
+      'pulse': 0,
+      'accent': true,
+      'muted': false,
+      'landing': true,
+      'gapSegment': 1,
+      'gapBar': 4,
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('Landing — were you on it?'), findsOneWidget);
+    expect(find.text('landing'), findsOneWidget);
+  });
+
+  testWidgets('a preset can be played, saved and deleted', (tester) async {
+    _FakeEngine().install(tester);
+    await tester.pumpWidget(const AccelApp());
+    await tester.pumpAndSettle();
+
+    await _toggleCard(tester, 'Gap trainer');
+    await _openPresets(tester);
+
+    // The five built-in presets, and nothing of the user's yet. The names
+    // are scoped to the sheet: "Ladder" also labels the card's mode picker
+    // behind it.
+    Finder inSheet(String text) => find.descendant(
+      of: find.byType(GapPresetsSheet),
+      matching: find.text(text),
+    );
+    for (final name in ['Warm-up', 'Classic', 'Advanced', 'Ladder']) {
+      expect(inSheet(name), findsOneWidget, reason: '$name is missing');
+    }
+    expect(find.text('none yet'), findsOneWidget);
+
+    // Playing one applies its settings: the ladder brings its own fields.
+    await tester.tap(inSheet('Ladder'));
+    await tester.pumpAndSettle();
+    expect(find.text('FIRST GAP'), findsOneWidget);
+
+    // Saving the settings in play puts them in the list.
+    await _openPresets(tester);
+    final field = find.descendant(
+      of: find.byType(GapPresetsSheet),
+      matching: find.byType(TextField),
+    );
+    await tester.ensureVisible(field);
+    await tester.pumpAndSettle();
+    await tester.enterText(field, 'My ladder');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('none yet'), findsNothing);
+    expect(find.text('My ladder'), findsWidgets);
+
+    await tester.tap(find.byIcon(Icons.delete_outline_rounded));
+    await tester.pumpAndSettle();
+    expect(find.text('none yet'), findsOneWidget);
+  });
+}
+
+/// Opens the presets sheet from the gap trainer card.
+Future<void> _openPresets(WidgetTester tester) async {
+  final button = find.byIcon(Icons.bookmark_add_rounded);
+  await tester.ensureVisible(button);
+  await tester.pumpAndSettle();
+  await tester.tap(button);
+  await tester.pumpAndSettle();
+}
+
+/// Flips the switch in the header of the card titled [title], scrolling it
+/// into the list first — the cards below the fold are not built until then.
+Future<void> _toggleCard(WidgetTester tester, String title) async {
+  await tester.scrollUntilVisible(
+    find.text(title),
+    200,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await tester.pumpAndSettle();
+  final card = find.ancestor(
+    of: find.text(title),
+    matching: find.byType(AccelCard),
+  );
+  final toggle = find
+      .descendant(of: card, matching: find.byType(AccelSwitch))
+      .first;
+  await tester.ensureVisible(toggle);
+  await tester.pumpAndSettle();
+  await tester.tap(toggle);
+  await tester.pumpAndSettle();
 }
 
 /// Opens the time-signature dropdown and picks an option.

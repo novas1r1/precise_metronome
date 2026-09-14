@@ -825,6 +825,98 @@ class AccelNumberField extends StatelessWidget {
       : value.toStringAsFixed(1);
 }
 
+// ------------------------------------------------------------- text field
+
+/// A glass text field with the small uppercase label above it, from
+/// `Input.jsx`. The border takes the accent while the field has focus.
+class AccelInput extends StatefulWidget {
+  const AccelInput({
+    super.key,
+    required this.label,
+    required this.controller,
+    this.hint,
+    this.autofocus = false,
+    this.maxLength,
+    this.onSubmitted,
+  });
+
+  final String label;
+  final TextEditingController controller;
+  final String? hint;
+  final bool autofocus;
+  final int? maxLength;
+  final ValueChanged<String>? onSubmitted;
+
+  @override
+  State<AccelInput> createState() => _AccelInputState();
+}
+
+class _AccelInputState extends State<AccelInput> {
+  final FocusNode _focus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(_onFocusChange);
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_onFocusChange);
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _onFocusChange() => setState(() {});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AccelLabel(widget.label),
+        const SizedBox(height: 8),
+        AnimatedContainer(
+          duration: AccelMotion.fast,
+          curve: AccelMotion.easeOut,
+          height: AccelControl.md,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          decoration: BoxDecoration(
+            color: AccelColors.surfaceInput,
+            borderRadius: AccelRadius.mdAll,
+            border: Border.all(
+              color: _focus.hasFocus
+                  ? AccelColors.accent
+                  : AccelColors.surfaceGlassBorder,
+            ),
+          ),
+          child: Center(
+            child: TextField(
+              controller: widget.controller,
+              focusNode: _focus,
+              autofocus: widget.autofocus,
+              maxLength: widget.maxLength,
+              textInputAction: TextInputAction.done,
+              textCapitalization: TextCapitalization.sentences,
+              cursorColor: AccelColors.accent,
+              style: AccelType.display(size: 16, weight: 500),
+              onSubmitted: widget.onSubmitted,
+              decoration: InputDecoration.collapsed(
+                hintText: widget.hint,
+                hintStyle: AccelType.display(
+                  size: 16,
+                  weight: 400,
+                  color: AccelColors.textMuted,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 // ---------------------------------------------------------- duration field
 
 /// A minutes:seconds stepper for timed ramp steps: minus / value / plus,
@@ -998,9 +1090,7 @@ class _AccelDurationFieldState extends State<AccelDurationField> {
                         letterSpacing: -0.02 * 22,
                         tabularFigures: true,
                       ),
-                      decoration: const InputDecoration.collapsed(
-                        hintText: '',
-                      ),
+                      decoration: const InputDecoration.collapsed(hintText: ''),
                     ),
                   ),
                 ),

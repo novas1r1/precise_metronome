@@ -12,6 +12,8 @@ dependencies:
     sdk: flutter
   precise_metronome:
     path: ../
+  # Remembers the last settings and the user's own gap presets.
+  shared_preferences: ^2.3.2
 
 dev_dependencies:
   flutter_test:

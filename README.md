@@ -24,6 +24,7 @@ once at init. No per-beat allocations on the audio thread.
 - Tap tempo
 - Beat events (`Metronome.beats`) for UI sync — beat indicators, bar counters — with optional subdivision pulses
 - Tempo ramps ("speed trainer"): step from a start to a goal BPM every N bars or every N seconds, always exactly on the bar line — optionally back down to the start in one uninterrupted ramp
+- Gap click trainer: whole bars drop out by a fixed, growing (ladder) or random pattern while the clock keeps counting — silenced natively, so the click after a gap lands exactly on the grid
 - Optional background playback (iOS audio session + Android foreground service)
 - Mixes with other audio by default — practice over backing tracks
 
@@ -114,7 +115,9 @@ if (bpm != null) await metronome.setTempo(bpm);
 pulse index, accent), timed to arrive as close as possible to the moment
 the click is heard — typically 2–10 ms behind the audio on iOS and
 10–25 ms on Android, below what the eye can notice. Native emission is
-only active while the stream has listeners.
+only active while the stream has listeners or a gap pattern is set. With a
+gap pattern, `muted` and `landing` tell silenced pulses and the first bar
+back apart (see below).
 
 ```dart
 final sub = metronome.beats.listen((b) {
@@ -212,6 +215,56 @@ call `stop()` — `RampProgress.totalSteps` is `null` in that case.
 await metronome.startRamp(TempoRamp(startBpm: 90, stepBpm: 4, stepLength: RampStepLength.bars(8)));
 ```
 
+### Gap click trainer
+
+Train your inner clock: the click drops out for whole bars while the
+metronome keeps counting, then comes back. The silencing happens in the
+native scheduler, so the first click after a gap lands exactly on the
+grid — you hear at once whether you held the tempo.
+
+```dart
+// Two bars of click, two silent bars, repeating.
+await metronome.setGapPattern(GapPattern.fixed(clickBars: 2, silentBars: 2));
+await metronome.start();
+
+// The gap grows by one bar every two cycles, from 1 up to 8 silent bars.
+await metronome.setGapPattern(GapPattern.ladder(
+  clickBars: 2, startSilentBars: 1, maxSilentBars: 8, cyclesPerStep: 2,
+));
+
+// Each bar is silent with a 30 % chance, never more than 2 in a row.
+await metronome.setGapPattern(GapPattern.random(
+  silentProbability: 0.3, maxConsecutiveSilent: 2,
+));
+
+await metronome.setGapPattern(null); // every bar clicks again
+```
+
+Every pattern opens with an audible bar. It starts from its beginning when
+the metronome starts, and when you change it while playing; the change
+takes effect on the next bar the engine has not scheduled yet. Subdivision
+pulses in a silent bar are silent too. Patterns work with plain `start()`
+and with tempo ramps.
+
+Beat events keep coming through the gap: `BeatEvent.muted` marks pulses
+that were silenced, and `BeatEvent.landing` marks every pulse of the first
+audible bar after one. `metronome.gapBarAt(bar)` tells you how any bar of
+the running session plays, including bars still to come, for a preview
+strip. To preview a pattern before it plays, use a `GapPatternGenerator`:
+
+```dart
+final bars = GapPatternGenerator(GapPattern.fixed(clickBars: 2, silentBars: 2));
+bars.barAt(2).silent;  // true
+bars.barAt(4).landing; // true
+```
+
+Dart decides the bars and hands them to the engine several seconds ahead,
+driven by beat events, which stay switched on natively while a pattern is
+set. If the engine ever runs out of planned bars — say Dart was suspended
+for a long time — those bars click rather than stay silent, and the pattern
+starts over. For practice with the screen locked, enable background
+playback.
+
 ### Background playback (optional)
 
 ```dart
@@ -290,7 +343,7 @@ kotlinOptions {
 
 Not yet included, easy to add later:
 
-- Practice modes beyond tempo ramps (random-mute, silent bars).
+- A distinct landing sound and per-beat masks for the gap click trainer.
 - User-supplied WAV samples.
 - Web, macOS, Windows, Linux.
 - Auto-resume after phone-call interruptions.

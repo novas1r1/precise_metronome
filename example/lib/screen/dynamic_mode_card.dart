@@ -25,7 +25,12 @@ class DynamicModeCard extends StatelessWidget {
       title: 'Dynamic mode',
       glow: on && m.isPlaying,
       expanded: on,
-      action: AccelSwitch(value: on, onChanged: m.setDynamicMode),
+      // The two trainers take turns, so the switch waits while the gap
+      // trainer plays rather than cutting it short.
+      action: AccelSwitch(
+        value: on,
+        onChanged: m.isPlaying && m.gapEnabled ? null : m.setDynamicMode,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [

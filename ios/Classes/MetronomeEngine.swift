@@ -9,12 +9,19 @@ struct RampProgress {
     let finished: Bool
 }
 
-/// One audible pulse, reported roughly when it becomes audible.
+/// One pulse, reported roughly when it becomes audible (or would have, when
+/// a gap pattern silenced it).
 struct BeatEvent {
     let bar: Int
     let beat: Int
     let pulse: Int
     let accent: Bool
+    let muted: Bool
+    let landing: Bool
+    /// Gap segment and bar within it that planned the pulse's bar, see
+    /// `GapPlan.Bar`.
+    let gapSegment: Int
+    let gapBar: Int
 }
 
 /// Core audio engine. All audio scheduling happens on a dedicated serial
@@ -86,6 +93,9 @@ final class MetronomeEngine {
     private var beatEventsEnabled = false
     private var beatEventsIncludeSub = false
     private var barIndex = 0
+
+    // Gap pattern: which bars are silent (serialQueue).
+    private var gapPlan = GapPlan()
 
     // Scheduling constants.
     private let lookaheadSeconds: Double = 0.1   // schedule 100 ms ahead
@@ -175,6 +185,8 @@ final class MetronomeEngine {
         beatIndexInBar = 0
         pulseIndexInBeat = 0
         barIndex = 0
+        // A segment sent right before start() is kept for the first bar.
+        gapPlan.reset()
         hasAnchor = false
         initialDelayFrames =
             AVAudioFramePosition(max(0, initialDelaySeconds) * sampleRate)
@@ -279,6 +291,20 @@ final class MetronomeEngine {
         }
     }
 
+    /// Stores which bars of gap segment `segment` are silent; see `GapPlan`.
+    func setGapBars(segment: Int, from: Int, silent: [Bool]) {
+        serialQueue.async { [weak self] in
+            self?.gapPlan.setBars(segment: segment, from: from, silent: silent)
+        }
+    }
+
+    /// Starts gap segment `segment` as one that silences nothing.
+    func clearGapPlan(segment: Int) {
+        serialQueue.async { [weak self] in
+            self?.gapPlan.clear(segment: segment)
+        }
+    }
+
     func setBeatEvents(enabled: Bool, includeSubdivisions: Bool) {
         serialQueue.async { [weak self] in
             self?.beatEventsEnabled = enabled
@@ -380,6 +406,9 @@ final class MetronomeEngine {
         let horizon = currentSampleTime + AVAudioFramePosition(lookaheadSeconds * sampleRate)
 
         while nextPulseSampleTime < horizon {
+            // Decided once per bar, before its first pulse.
+            let gap = gapPlan.bar(barIndex)
+
             // The pattern carries one flag per pulse of the bar, so a
             // subdivision pulse can be accented too. An unaccented pulse
             // uses the normal click on a main beat and the softer sub
@@ -393,8 +422,12 @@ final class MetronomeEngine {
                     ? buffers.accent
                     : (pulseIndexInBeat == 0 ? buffers.normal : buffers.sub)
 
-            let when = AVAudioTime(sampleTime: nextPulseSampleTime, atRate: sampleRate)
-            playerNode.scheduleBuffer(buffer, at: when, options: [], completionHandler: nil)
+            // A silent bar keeps its place in time; it just schedules no
+            // click.
+            if !gap.silent {
+                let when = AVAudioTime(sampleTime: nextPulseSampleTime, atRate: sampleRate)
+                playerNode.scheduleBuffer(buffer, at: when, options: [], completionHandler: nil)
+            }
             lastScheduledPulseTime = nextPulseSampleTime
 
             if beatEventsEnabled, let onBeat = onBeat,
@@ -402,7 +435,9 @@ final class MetronomeEngine {
                 // The click is scheduled up to `lookaheadSeconds` ahead;
                 // hold the event back until it is actually audible.
                 let event = BeatEvent(bar: barIndex, beat: beatIndexInBar,
-                                      pulse: pulseIndexInBeat, accent: isAccent)
+                                      pulse: pulseIndexInBeat, accent: isAccent,
+                                      muted: gap.silent, landing: gap.landing,
+                                      gapSegment: gap.segment, gapBar: gap.index)
                 let secondsUntilAudible =
                     Double(nextPulseSampleTime - currentSampleTime) / sampleRate
                     + AVAudioSession.sharedInstance().outputLatency

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "click_synth.h"
+#include "gap_plan.h"
 
 namespace precise_metronome {
 
@@ -53,6 +54,13 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     void set_voice(int voice_index);
     void set_volume(double volume);
 
+    // Gap patterns: which bars are silent, see GapPlan. set_gap_bars
+    // returns false when the audio thread has not taken in earlier bars
+    // yet; nothing is stored then.
+    bool set_gap_bars(int32_t segment, int32_t from, const uint8_t* silent,
+                      int32_t count);
+    void clear_gap_plan(int32_t segment);
+
     // Beat events: when enabled, the audio thread records every rendered
     // pulse (or only main beats) into a small lock-free ring buffer that
     // the Flutter thread drains with drain_beat_events().
@@ -61,6 +69,14 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
         int32_t beat;
         int32_t pulse;
         int32_t accent;
+        // 1 when a gap pattern silenced the pulse.
+        int32_t muted;
+        // 1 in the first audible bar after a silent one.
+        int32_t landing;
+        // Gap segment and bar within it that planned the pulse's bar, see
+        // GapPlan::Bar.
+        int32_t gap_segment;
+        int32_t gap_bar;
     };
     void set_beat_events(bool enabled, bool include_subdivisions);
     // Copies up to `max` pending events into `out`, oldest first, and
@@ -162,6 +178,10 @@ class MetronomeEngine : public oboe::AudioStreamDataCallback,
     // update, which is acceptable for a metronome.
     std::array<bool, kMaxPattern> accent_pattern_{};
     std::atomic<int> pattern_length_{4};
+
+    // Which bars a gap pattern silences: commands from the Flutter thread,
+    // segments on the audio thread.
+    GapPlan gap_plan_;
 
     // Pre-rendered buffers, double-buffered: we mutate buffers_next_ from the
     // Flutter thread and have the audio thread swap to it when reset_requested_

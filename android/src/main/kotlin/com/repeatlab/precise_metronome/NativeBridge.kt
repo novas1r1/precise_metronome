@@ -51,6 +51,22 @@ internal object NativeBridge {
         enabled: Boolean,
         includeSubdivisions: Boolean
     )
-    /** Pending beat events flattened as [bar, beat, pulse, accent, ...]. */
+    /**
+     * Pending beat events flattened as
+     * [bar, beat, pulse, accent, muted, landing, gapSegment, gapBar, ...].
+     */
     @JvmStatic external fun nativeDrainBeatEvents(handle: Long): IntArray
+
+    /**
+     * Stores which bars of a gap segment are silent; false when the audio
+     * thread has not taken in earlier bars yet.
+     */
+    @JvmStatic external fun nativeSetGapBars(
+        handle: Long,
+        segment: Int,
+        from: Int,
+        silent: BooleanArray
+    ): Boolean
+    /** Starts a gap segment that silences nothing. */
+    @JvmStatic external fun nativeClearGapPlan(handle: Long, segment: Int)
 }

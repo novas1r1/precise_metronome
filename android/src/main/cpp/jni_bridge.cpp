@@ -165,26 +165,53 @@ Java_com_repeatlab_precise_1metronome_NativeBridge_nativeSetBeatEvents(
                                        include_subdivisions != 0);
 }
 
-// Returns pending beat events flattened as [bar, beat, pulse, accent, ...].
+// Stores which bars of a gap segment are silent. Returns false when the
+// audio thread has not taken in earlier bars yet; nothing is stored then.
+JNIEXPORT jboolean JNICALL
+Java_com_repeatlab_precise_1metronome_NativeBridge_nativeSetGapBars(
+    JNIEnv* env, jclass /*clazz*/, jlong handle, jint segment, jint from,
+    jbooleanArray silent) {
+    if (handle == 0 || silent == nullptr) return JNI_FALSE;
+    const jsize count = env->GetArrayLength(silent);
+    jboolean* elements = env->GetBooleanArrayElements(silent, nullptr);
+    if (elements == nullptr) return JNI_FALSE;
+    const bool stored =
+        engine_of(handle)->set_gap_bars(segment, from, elements, count);
+    env->ReleaseBooleanArrayElements(silent, elements, JNI_ABORT);
+    return stored ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_repeatlab_precise_1metronome_NativeBridge_nativeClearGapPlan(
+    JNIEnv* /*env*/, jclass /*clazz*/, jlong handle, jint segment) {
+    if (handle == 0) return;
+    engine_of(handle)->clear_gap_plan(segment);
+}
+
+// Returns pending beat events flattened as [bar, beat, pulse, accent, muted,
+// landing, gapSegment, gapBar, ...].
 JNIEXPORT jintArray JNICALL
 Java_com_repeatlab_precise_1metronome_NativeBridge_nativeDrainBeatEvents(
     JNIEnv* env, jclass /*clazz*/, jlong handle) {
     constexpr int kMax = 64;
+    constexpr int kFields = 8;
     MetronomeEngine::BeatEvent events[kMax];
     int n = 0;
     if (handle != 0) {
         n = engine_of(handle)->drain_beat_events(events, kMax);
     }
-    jintArray out = env->NewIntArray(n * 4);
+    jintArray out = env->NewIntArray(n * kFields);
     if (out == nullptr || n == 0) return out;
-    jint flat[kMax * 4];
+    jint flat[kMax * kFields];
     for (int i = 0; i < n; ++i) {
-        flat[i * 4 + 0] = events[i].bar;
-        flat[i * 4 + 1] = events[i].beat;
-        flat[i * 4 + 2] = events[i].pulse;
-        flat[i * 4 + 3] = events[i].accent;
+        const MetronomeEngine::BeatEvent& e = events[i];
+        const jint fields[kFields] = {
+            e.bar,   e.beat,    e.pulse,       e.accent,
+            e.muted, e.landing, e.gap_segment, e.gap_bar,
+        };
+        std::copy(fields, fields + kFields, flat + i * kFields);
     }
-    env->SetIntArrayRegion(out, 0, n * 4, flat);
+    env->SetIntArrayRegion(out, 0, n * kFields, flat);
     return out;
 }
 
