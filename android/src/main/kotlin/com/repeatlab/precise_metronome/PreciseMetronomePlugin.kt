@@ -14,10 +14,13 @@ import io.flutter.plugin.common.MethodChannel
  * Flutter entry point: dispatches method calls to the native engine and
  * forwards its ramp progress and beat events to Dart.
  *
- * Both event streams are polled from the main thread rather than pushed
- * from the audio callback. Ramp progress lives in atomics the audio thread
- * publishes; beat events sit in a native ring buffer it fills. Polling is
- * cheaper and safer than JNI callbacks from a real-time thread.
+ * Both engine event streams are polled from the main thread rather than
+ * pushed from the audio callback. Ramp progress lives in atomics the audio
+ * thread publishes; beat events sit in a native ring buffer it fills.
+ * Polling is cheaper and safer than JNI callbacks from a real-time thread.
+ *
+ * A third stream carries the buttons pressed on the background
+ * notification (see [MetronomeService]).
  */
 class PreciseMetronomePlugin :
     FlutterPlugin,
@@ -26,10 +29,14 @@ class PreciseMetronomePlugin :
     private lateinit var channel: MethodChannel
     private lateinit var rampChannel: EventChannel
     private lateinit var beatChannel: EventChannel
+    private lateinit var notificationChannel: EventChannel
     private lateinit var appContext: Context
 
     private var engineHandle = 0L
     private var backgroundEnabled = false
+
+    // Notification buttons, forwarded as they come in.
+    private var notificationSink: EventChannel.EventSink? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -75,6 +82,18 @@ class PreciseMetronomePlugin :
                 updateBeatPolling()
             }
         )
+        notificationChannel =
+            EventChannel(binding.binaryMessenger, "precise_metronome/notification")
+        notificationChannel.setStreamHandler(streamHandler { notificationSink = it })
+        MetronomeService.onAction = { action ->
+            val name = when (action) {
+                MetronomeService.ACTION_PLAY -> "play"
+                MetronomeService.ACTION_PAUSE -> "pause"
+                MetronomeService.ACTION_STOP -> "stop"
+                else -> null
+            }
+            if (name != null) mainHandler.post { notificationSink?.success(name) }
+        }
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -83,6 +102,9 @@ class PreciseMetronomePlugin :
         rampSink = null
         beatChannel.setStreamHandler(null)
         beatSink = null
+        MetronomeService.onAction = null
+        notificationChannel.setStreamHandler(null)
+        notificationSink = null
         teardownEngine()
         stopBackgroundPlayback()
     }
@@ -115,6 +137,7 @@ class PreciseMetronomePlugin :
                 "setGapPlan" -> setGapPlan(call, result)
                 "clearGapPlan" -> clearGapPlan(call, result)
                 "enableBackgroundPlayback" -> enableBackgroundPlayback(call, result)
+                "updateBackgroundNotification" -> updateBackgroundNotification(call, result)
                 "disableBackgroundPlayback" -> disableBackgroundPlayback(result)
                 "dispose" -> dispose(result)
                 else -> result.notImplemented()
@@ -309,6 +332,12 @@ class PreciseMetronomePlugin :
         result.success(null)
     }
 
+    /** Redraws the notification. Nothing to do while the service is down. */
+    private fun updateBackgroundNotification(call: MethodCall, result: MethodChannel.Result) {
+        if (backgroundEnabled) startForegroundService(call.argument<Map<String, Any?>>("android"))
+        result.success(null)
+    }
+
     private fun disableBackgroundPlayback(result: MethodChannel.Result) {
         stopBackgroundPlayback()
         result.success(null)
@@ -417,6 +446,10 @@ class PreciseMetronomePlugin :
 
     // --------------------------------------------------- background service
 
+    /**
+     * Starts the service, or hands a running one new notification contents.
+     * Either way the service posts the notification again.
+     */
     private fun startForegroundService(config: Map<String, Any?>?) {
         val intent = Intent(appContext, MetronomeService::class.java).apply {
             putExtra(
@@ -424,6 +457,8 @@ class PreciseMetronomePlugin :
                 config?.get("title") as? String ?: "Metronome running"
             )
             putExtra(MetronomeService.EXTRA_BODY, config?.get("body") as? String)
+            putExtra(MetronomeService.EXTRA_PLAYING, config?.get("playing") as? Boolean ?: true)
+            putExtra(MetronomeService.EXTRA_SMALL_ICON, config?.get("smallIcon") as? String)
             putExtra(
                 MetronomeService.EXTRA_CHANNEL_ID,
                 config?.get("channelId") as? String ?: MetronomeService.DEFAULT_CHANNEL_ID

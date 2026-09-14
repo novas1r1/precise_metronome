@@ -270,14 +270,46 @@ playback.
 ```dart
 await metronome.enableBackgroundPlayback(
   androidNotification: AndroidNotificationConfig(
-    title: 'Practice session',
-    body: 'Metronome is running',
+    title: '120 BPM · 4/4',
+    body: 'Playing',
+    playing: true,
+    smallIcon: 'ic_notification', // a monochrome drawable of yours; optional
   ),
 );
 
 // Later:
 await metronome.disableBackgroundPlayback();
 ```
+
+On Android this is a media-style notification: two lines of text, a
+play/pause toggle and a stop button, mirrored on the lock screen and
+reachable from headset buttons. It never changes on its own — your app
+owns the state:
+
+```dart
+// Redraw it whenever the text or the play/pause state changes.
+await metronome.updateBackgroundNotification(
+  AndroidNotificationConfig(title: '124 BPM · 4/4', body: 'Silent', playing: true),
+);
+
+// React to its buttons like to your own transport controls.
+metronome.notificationActions.listen((action) async {
+  switch (action) {
+    case NotificationAction.play:
+      await metronome.start();
+      await metronome.updateBackgroundNotification(config.copyWith(playing: true));
+    case NotificationAction.pause:
+      await metronome.stop();
+      // Keep the service so the user can resume from the notification.
+      await metronome.updateBackgroundNotification(config.copyWith(playing: false));
+    case NotificationAction.stop:
+      await metronome.stop();
+      await metronome.disableBackgroundPlayback();
+  }
+});
+```
+
+Tapping the notification brings your launcher activity to the front.
 
 ## Platform setup
 

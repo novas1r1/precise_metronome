@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:developer' as developer;
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/services.dart';
 
 import 'background_config.dart';
@@ -34,8 +36,9 @@ import 'voice.dart';
 /// ```
 class Metronome {
   static const MethodChannel _channel = MethodChannel('precise_metronome');
-  static const EventChannel _rampChannel =
-      EventChannel('precise_metronome/ramp');
+  static const EventChannel _rampChannel = EventChannel(
+    'precise_metronome/ramp',
+  );
 
   bool _initialized = false;
   bool _disposed = false;
@@ -46,15 +49,28 @@ class Metronome {
   final StreamController<RampProgress> _rampController =
       StreamController<RampProgress>.broadcast();
 
-  static const EventChannel _beatChannel =
-      EventChannel('precise_metronome/beats');
+  static const EventChannel _beatChannel = EventChannel(
+    'precise_metronome/beats',
+  );
   StreamSubscription<dynamic>? _beatSubscription;
   late final StreamController<BeatEvent> _beatController =
       StreamController<BeatEvent>.broadcast(
-    onListen: _syncBeatEvents,
-    onCancel: _syncBeatEvents,
-  );
+        onListen: _syncBeatEvents,
+        onCancel: _syncBeatEvents,
+      );
   bool _includeSubdivisions = false;
+
+  // Buttons pressed on the Android background notification. Subscribed to
+  // the platform stream while anyone listens; Android only.
+  static const EventChannel _notificationChannel = EventChannel(
+    'precise_metronome/notification',
+  );
+  StreamSubscription<dynamic>? _notificationSubscription;
+  late final StreamController<NotificationAction> _notificationController =
+      StreamController<NotificationAction>.broadcast(
+        onListen: _listenToNotification,
+        onCancel: _stopListeningToNotification,
+      );
 
   // Gap pattern. Dart decides the bars (GapPatternGenerator) and hands them
   // to the engine in segments, one per run of the pattern, numbered
@@ -88,6 +104,7 @@ class Metronome {
 
   double _bpm = 120.0;
   TimeSignature _timeSignature = TimeSignature(4, 4);
+
   /// One flag per pulse of the bar: `beat * pulsesPerBeat + pulse`.
   List<bool> _pulseAccents = const [true, false, false, false];
   bool _accentEnabled = true;
@@ -281,12 +298,14 @@ class Metronome {
       ...ramp.toMap(),
     });
     _isPlaying = true;
-    _rampController.add(RampProgress(
-      stepIndex: 0,
-      totalSteps: ramp.isOpenEnded ? null : ramp.totalSteps,
-      bpm: ramp.startBpm,
-      finished: false,
-    ));
+    _rampController.add(
+      RampProgress(
+        stepIndex: 0,
+        totalSteps: ramp.isOpenEnded ? null : ramp.totalSteps,
+        bpm: ramp.startBpm,
+        finished: false,
+      ),
+    );
   }
 
   /// Shifts the phase of all future clicks by [delta] while playing.
@@ -591,6 +610,51 @@ class Metronome {
     });
   }
 
+  /// Redraws the Android background notification with [androidNotification]
+  /// — new text, or the play/pause toggle flipped. Does nothing while
+  /// background playback is off, and nothing at all on other platforms.
+  Future<void> updateBackgroundNotification(
+    AndroidNotificationConfig androidNotification,
+  ) async {
+    _assertReady();
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    await _channel.invokeMethod<void>('updateBackgroundNotification', {
+      'android': androidNotification.toMap(),
+    });
+  }
+
+  /// Buttons pressed on the Android background notification, the lock
+  /// screen or a headset. Never fires on other platforms.
+  ///
+  /// The notification does not change on its own: start or stop the
+  /// metronome as asked, then [updateBackgroundNotification] (for
+  /// [NotificationAction.pause], keeping the service for a later play) or
+  /// [disableBackgroundPlayback] (for [NotificationAction.stop]).
+  Stream<NotificationAction> get notificationActions =>
+      _notificationController.stream;
+
+  void _listenToNotification() {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    _notificationSubscription ??= _notificationChannel
+        .receiveBroadcastStream()
+        .listen((event) {
+          final action = switch (event) {
+            'play' => NotificationAction.play,
+            'pause' => NotificationAction.pause,
+            'stop' => NotificationAction.stop,
+            _ => null,
+          };
+          if (action != null && !_notificationController.isClosed) {
+            _notificationController.add(action);
+          }
+        });
+  }
+
+  void _stopListeningToNotification() {
+    _notificationSubscription?.cancel();
+    _notificationSubscription = null;
+  }
+
   /// Disables background playback and releases the Android foreground
   /// service (no-op on iOS beyond deactivating the session).
   Future<void> disableBackgroundPlayback() async {
@@ -618,6 +682,8 @@ class Metronome {
     await _beatSubscription?.cancel();
     _beatSubscription = null;
     await _beatController.close();
+    _stopListeningToNotification();
+    await _notificationController.close();
   }
 
   // ---- internals ----
@@ -783,12 +849,14 @@ class Metronome {
       _isPlaying = false;
       _activeRamp = null;
     }
-    _rampController.add(RampProgress(
-      stepIndex: stepIndex,
-      totalSteps: ramp.isOpenEnded ? null : ramp.totalSteps,
-      bpm: bpm,
-      finished: finished,
-    ));
+    _rampController.add(
+      RampProgress(
+        stepIndex: stepIndex,
+        totalSteps: ramp.isOpenEnded ? null : ramp.totalSteps,
+        bpm: bpm,
+        finished: finished,
+      ),
+    );
   }
 
   Future<void> _pushState() async {

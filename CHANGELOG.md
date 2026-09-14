@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — Media notification on Android
+
+- The background notification is now media-style, backed by a
+  `MediaSessionCompat`: two lines of text, a play/pause toggle and a stop
+  button, shown on the lock screen too and driven by headset buttons.
+- `AndroidNotificationConfig` gains `playing` (which button the toggle
+  shows) and `smallIcon` (a monochrome drawable of the app's; the plugin
+  ships a metronome icon as the default). It is now a value type with
+  `copyWith`.
+- New `Metronome.updateBackgroundNotification(config)` redraws the
+  notification without restarting the service, and
+  `Metronome.notificationActions` streams `NotificationAction.play`,
+  `.pause` and `.stop` as the user presses them. The plugin changes nothing
+  by itself; the app acts and updates the notification.
+- Tapping the notification opens the app. Swiping it away, where Android
+  allows that, reports `NotificationAction.stop`.
+- The service is no longer sticky: after a process death it is not
+  restarted with a stale notification.
+
 ## Unreleased — Gap click trainer
 
 - New `Metronome.setGapPattern(GapPattern?)`: whole bars go silent by a

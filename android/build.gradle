@@ -69,4 +69,6 @@ dependencies {
     // 1.9.3+ ships 16 KB-aligned prebuilt liboboe.so (1.9.0 was 4 KB).
     implementation 'com.google.oboe:oboe:1.9.3'
     implementation 'androidx.core:core-ktx:1.12.0'
+    // MediaSessionCompat and the media-style notification the service posts.
+    implementation 'androidx.media:media:1.7.0'
 }
