@@ -17,13 +17,14 @@ once at init. No per-beat allocations on the audio thread.
 
 - Sample-accurate scheduling via a 25 ms look-ahead loop
 - Time signatures with smart compound-meter defaults (6/8 → 2 beats, 9/8 → 3, 12/8 → 4)
-- Arbitrary accent patterns, or simply: accent off (even clicks) / accent on any beat of the bar
-- Subdivisions (duple / triplet / quadruple) with softer sub-clicks between main beats
+- Arbitrary accent patterns, per main beat or per subdivision pulse
+- Subdivisions (duple / triplet / quadruple) with softer sub-clicks between main beats — and accents that can land on a subdivision pulse
 - Five procedural click voices — tone, click, wood, mechanical (with bell accent), soft blip — no bundled audio assets
 - Tempo range 20–400 BPM
 - Tap tempo
 - Beat events (`Metronome.beats`) for UI sync — beat indicators, bar counters — with optional subdivision pulses
-- Tempo ramps ("speed trainer"): step from a start to a goal BPM every N bars, exactly on the bar line
+- Tempo ramps ("speed trainer"): step from a start to a goal BPM every N bars or every N seconds, always exactly on the bar line — optionally back down to the start in one uninterrupted ramp
+- Gap click trainer: whole bars drop out by a fixed, growing (ladder) or random pattern while the clock keeps counting — silenced natively, so the click after a gap lands exactly on the grid
 - Optional background playback (iOS audio session + Android foreground service)
 - Mixes with other audio by default — practice over backing tracks
 
@@ -72,6 +73,32 @@ await metronome.nudge(Duration(milliseconds: -25)); // clicks 25 ms earlier
 await metronome.dispose();
 ```
 
+### Accents
+
+`setAccentPattern` takes one flag per main beat, or one flag per audible
+pulse when you want a subdivision to carry the accent:
+
+```dart
+await metronome.setTimeSignature(TimeSignature(4, 4));
+await metronome.setSubdivision(Subdivision.duple);
+
+// One flag per beat — the eighths in between stay on the sub click.
+await metronome.setAccentPattern([true, false, true, false]);
+
+// One flag per pulse (beat * pulsesPerBeat + pulse): beat 1, and the
+// "and" of 3 — a backbeat push.
+await metronome.setAccentPattern([
+  true, false,   // 1  &
+  false, false,  // 2  &
+  false, true,   // 3  &
+  false, false,  // 4  &
+]);
+```
+
+`accentPattern` reports the per-beat view, `pulseAccents` the full grid.
+Changing the subdivision keeps the main-beat accents and clears any that sat
+on subdivision pulses, since those slots no longer line up.
+
 ### Tap tempo
 
 ```dart
@@ -88,7 +115,9 @@ if (bpm != null) await metronome.setTempo(bpm);
 pulse index, accent), timed to arrive as close as possible to the moment
 the click is heard — typically 2–10 ms behind the audio on iOS and
 10–25 ms on Android, below what the eye can notice. Native emission is
-only active while the stream has listeners.
+only active while the stream has listeners or a gap pattern is set. With a
+gap pattern, `muted` and `landing` tell silenced pulses and the first bar
+back apart (see below).
 
 ```dart
 final sub = metronome.beats.listen((b) {
@@ -118,7 +147,7 @@ final ramp = TempoRamp(
   startBpm: 80,
   goalBpm: 120,
   stepBpm: 5,        // 80, 85, 90, ... 120 (last step is clamped to the goal)
-  barsPerStep: 4,    // hold each tempo for 4 bars
+  stepLength: RampStepLength.bars(4),  // hold each tempo for 4 bars
 );
 
 final sub = metronome.rampProgress.listen((p) {
@@ -130,6 +159,23 @@ await metronome.startRamp(ramp);
 // ... call metronome.stop() to abort early.
 ```
 
+A step can also be a stretch of time instead of a bar count. The tempo
+still only changes on a bar line: a timed step is held until its duration
+has elapsed and then ends at the next downbeat, so 30 s at 100 BPM in 4/4
+plays 13 bars. The time is counted natively in audio frames, not with a
+wall clock, so it is as exact as the clicks themselves.
+
+```dart
+await metronome.startRamp(TempoRamp(
+  startBpm: 80, goalBpm: 120, stepBpm: 5,
+  stepLength: RampStepLength.time(const Duration(seconds: 30)),
+));
+```
+
+`ramp.barsAt(step, beatsPerBar: 4)`, `ramp.totalBars(...)` and
+`ramp.totalDuration(...)` tell you up front how many bars and how much time
+a ramp will take, for either kind of step.
+
 Pass `holdAtGoal: true` to keep clicking at the goal tempo instead of
 stopping — handy when the musician has just reached target tempo and wants
 to keep playing. `RampProgress.isLastStep` tells you the goal step is on;
@@ -137,21 +183,87 @@ no `finished` event follows, end it with `stop()`.
 
 ```dart
 await metronome.startRamp(TempoRamp(
-  startBpm: 80, goalBpm: 120, stepBpm: 5, barsPerStep: 4,
+  startBpm: 80, goalBpm: 120, stepBpm: 5, stepLength: RampStepLength.bars(4),
   holdAtGoal: true,
 ));
 ```
 
+Pass `returnToStart: true` to walk back down again: once the goal has had
+its step, the tempo steps back to `startBpm` in the same increments and the
+ramp ends there. The turnaround happens inside the running native ramp — the
+metronome does not stop and restart — so it lands on the bar line with the
+same sample accuracy as every other step.
+
+```dart
+await metronome.startRamp(TempoRamp(
+  startBpm: 60, goalBpm: 70, stepBpm: 5, stepLength: RampStepLength.bars(4),
+  returnToStart: true,
+));
+// 60 → 65 → 70 → 65 → 60, four bars each, then stops.
+```
+
 `ramp.steps` gives you the full list of tempi up front, e.g. for a
-progress bar. `goalBpm` below `startBpm` ramps downwards.
+progress bar — both legs included, with the goal counted once — and
+`RampProgress.stepIndex` counts straight through the turnaround.
+`goalBpm` below `startBpm` ramps downwards.
 
 Leave out `goalBpm` for an open-ended ramp: the tempo keeps climbing by
 `stepBpm` until it reaches 400 BPM, holds there, and only ends when you
 call `stop()` — `RampProgress.totalSteps` is `null` in that case.
 
 ```dart
-await metronome.startRamp(TempoRamp(startBpm: 90, stepBpm: 4, barsPerStep: 8));
+await metronome.startRamp(TempoRamp(startBpm: 90, stepBpm: 4, stepLength: RampStepLength.bars(8)));
 ```
+
+### Gap click trainer
+
+Train your inner clock: the click drops out for whole bars while the
+metronome keeps counting, then comes back. The silencing happens in the
+native scheduler, so the first click after a gap lands exactly on the
+grid — you hear at once whether you held the tempo.
+
+```dart
+// Two bars of click, two silent bars, repeating.
+await metronome.setGapPattern(GapPattern.fixed(clickBars: 2, silentBars: 2));
+await metronome.start();
+
+// The gap grows by one bar every two cycles, from 1 up to 8 silent bars.
+await metronome.setGapPattern(GapPattern.ladder(
+  clickBars: 2, startSilentBars: 1, maxSilentBars: 8, cyclesPerStep: 2,
+));
+
+// Each bar is silent with a 30 % chance, never more than 2 in a row.
+await metronome.setGapPattern(GapPattern.random(
+  silentProbability: 0.3, maxConsecutiveSilent: 2,
+));
+
+await metronome.setGapPattern(null); // every bar clicks again
+```
+
+Every pattern opens with an audible bar. It starts from its beginning when
+the metronome starts, and when you change it while playing; the change
+takes effect on the next bar the engine has not scheduled yet. Subdivision
+pulses in a silent bar are silent too. Patterns work with plain `start()`
+and with tempo ramps.
+
+Beat events keep coming through the gap: `BeatEvent.muted` marks pulses
+that were silenced, and `BeatEvent.landing` marks every pulse of the first
+audible bar after one. `metronome.gapBarAt(bar)` tells you how any bar of
+the running session plays, including bars still to come, for a preview
+strip. To preview a pattern before it plays, use a `GapPatternGenerator`:
+
+```dart
+final bars = GapPatternGenerator(GapPattern.fixed(clickBars: 2, silentBars: 2));
+bars.barAt(2).silent;  // true
+bars.barAt(4).landing; // true
+```
+
+Dart decides the bars and hands them to the engine several seconds ahead,
+driven by beat events, which stay switched on natively while a pattern is
+set. If the engine ever runs out of planned bars — say Dart was suspended
+for a long time — those bars click rather than stay silent, and the pattern
+starts over. For practice with the screen locked, enable background
+playback.
 
 ### Background playback (optional)
 
@@ -231,7 +343,7 @@ kotlinOptions {
 
 Not yet included, easy to add later:
 
-- Practice modes beyond tempo ramps (random-mute, silent bars).
+- A distinct landing sound and per-beat masks for the gap click trainer.
 - User-supplied WAV samples.
 - Web, macOS, Windows, Linux.
 - Auto-resume after phone-call interruptions.

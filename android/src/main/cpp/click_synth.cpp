@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 namespace precise_metronome {
 
@@ -259,6 +260,28 @@ std::vector<float> render_blip(double sample_rate,
 }
 
 }  // namespace
+
+bool parse_click_voice(const char* name, ClickVoice* voice) {
+    struct Entry {
+        const char* name;
+        ClickVoice voice;
+    };
+    // Mirrors the Dart `MetronomeVoice` enum and the Swift `ClickVoice`.
+    static constexpr Entry kVoices[] = {
+        {"tone", ClickVoice::Tone},
+        {"click", ClickVoice::Click},
+        {"wood", ClickVoice::Wood},
+        {"mechanical", ClickVoice::Mechanical},
+        {"blip", ClickVoice::Blip},
+    };
+    for (const Entry& entry : kVoices) {
+        if (std::strcmp(name, entry.name) == 0) {
+            *voice = entry.voice;
+            return true;
+        }
+    }
+    return false;
+}
 
 ClickBuffers render_click_buffers(ClickVoice voice, double sample_rate) {
     // Relative amplitude of subdivision pulses vs. a normal main-beat

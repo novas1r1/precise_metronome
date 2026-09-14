@@ -38,12 +38,6 @@ android/app/.cxx/
 # macOS
 .DS_Store
 
-# Example app regenerated scaffolding
-example/ios/
-example/android/
-example/macos/
-example/linux/
-example/windows/
-example/web/
+# Example app
 example/.dart_tool/
 example/pubspec.lock

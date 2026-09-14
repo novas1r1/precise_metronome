@@ -1,5 +1,84 @@
 # Changelog
 
+## Unreleased — Gap click trainer
+
+- New `Metronome.setGapPattern(GapPattern?)`: whole bars go silent by a
+  pattern while the clock keeps counting, so the click after a gap lands
+  exactly on the grid. `GapPattern.fixed` alternates click and silent
+  phases, `GapPattern.ladder` grows the gap every few cycles, and
+  `GapPattern.random` silences bars by chance, with a cap on silent bars
+  in a row. A silent bar silences its subdivision pulses too.
+- Bars are decided in Dart (`GapPatternGenerator`) and handed to both
+  native engines in segments, several seconds ahead. The engines silence
+  bars in the scheduler itself. A bar without a plan plays audible, and
+  the pattern starts over.
+- `BeatEvent.muted` marks silenced pulses and `BeatEvent.landing` the
+  first audible bar after a gap. `Metronome.gapBarAt` previews any bar of
+  the running session.
+- While a gap pattern is set, native beat events stay on even without a
+  listener on `Metronome.beats`.
+- Android: after an audio device error the gap pattern starts over.
+
+## 0.8.0 — Timed ramp steps
+
+- A `TempoRamp` step can now be a stretch of time instead of a bar count.
+  `barsPerStep` is replaced by `stepLength`, a `RampStepLength`:
+  `RampStepLength.bars(4)` or `RampStepLength.time(Duration(seconds: 30))`.
+  The tempo still only changes on a bar line: a timed step is held until
+  its duration has elapsed and then ends at the next downbeat (30 s at
+  100 BPM in 4/4 plays 13 bars). Works with `holdAtGoal`, `returnToStart`
+  and open-ended ramps alike.
+- Both native engines count the step time in audio frames from the
+  downbeat that opened the step, so it is sample-accurate and unaffected
+  by Dart, background playback or nudges. New `stepMs` argument on the
+  `startRamp` method call (0 for bar-counted steps).
+- Added `TempoRamp.barsAt`, `totalBars` and `totalDuration`, and
+  `RampStepLength.barsAt` / `durationAt`, to predict how many bars and how
+  long a ramp plays for a given time signature.
+- Example app: "Hold each tempo for" switches between bars and time, with
+  quick picks (15 s – 5 min) and a typed `m:ss` field (5 s – 30 min). The
+  dial counts the step down, and the plan line now shows the total time.
+- **Breaking:** `TempoRamp(barsPerStep: n)` becomes
+  `TempoRamp(stepLength: RampStepLength.bars(n))`.
+- Fixed: on iOS, `setAccentPattern` was ignored whenever a subdivision was
+  on, because the engine only accepted one flag per beat. On Android,
+  patterns longer than 32 flags were cut off at the JNI boundary. Both
+  engines now take the full per-pulse pattern (up to 32 beats × 4 pulses).
+- Fixed: the iOS plugin replied twice to a call made before `init()`.
+- Android maps voice names next to the synth in C++, so the Dart, Kotlin
+  and native voice lists cannot drift apart.
+
+## 0.7.0 — Round-trip ramps and accents on subdivision pulses
+
+- `setAccentPattern` now also accepts a pattern with one flag per audible
+  pulse (`timeSignature.beatsPerBar * subdivision.pulsesPerBeat`, indexed
+  `beat * pulsesPerBeat + pulse`), so a subdivision pulse can carry the
+  accent click instead of always taking the softer sub click. Passing one
+  flag per main beat keeps working exactly as before.
+- Added `Metronome.pulseAccents` for the per-pulse view. `accentPattern`
+  still reports one flag per main beat.
+- `setSubdivision` rescales the pattern onto the new pulse grid: main-beat
+  accents are kept, accents that sat on subdivision pulses are cleared.
+- `BeatEvent.accent` is now `true` for an accented subdivision pulse.
+- Both engines index the pattern per pulse; the native maximum grew from 32
+  beats to 128 pulses per bar.
+- `setAccentEnabled` and `setAccentBeat` (0.5.0) now write onto the pulse
+  grid too. `accentBeat` tracks a lone accent only while it sits on a main
+  beat: a single accent placed on a subdivision pulse leaves it untouched,
+  so switching accents off and on again restores the beat, not the off-beat.
+
+- Added `TempoRamp.returnToStart`: after the goal tempo has been played for
+  its bars, the ramp steps back down to `startBpm` in the same increments
+  and ends there (60 → 65 → 70 → 65 → 60 for a 60→70 ramp in steps of 5).
+  The turnaround happens inside the running native ramp, on the bar line,
+  with the same sample accuracy as every other step — the engine never
+  stops and restarts, so there is no gap or late click at the top.
+  `returnToStart` requires a `goalBpm`; combined with `holdAtGoal` the
+  metronome holds `startBpm` at the end of the return leg.
+- `TempoRamp.totalSteps`, `steps` and `bpmAt` cover both legs, and
+  `RampProgress.stepIndex` counts straight through the turnaround, so a
+  progress bar can show the whole arc. The goal step is counted once.
+
 ## 0.6.0 — Three new voices
 
 - Added three procedurally synthesized voices (still no bundled assets):

@@ -149,8 +149,10 @@ Ordered by likely priority:
    API-layer addition, not an engine rewrite.
 3. **Practice modes.** Progressive tempo ramps shipped in 0.4.0
    (`TempoRamp` / `startRamp`, native bar-line stepping, ramp events via
-   `precise_metronome/ramp` EventChannel). Still open: random mute
-   (silence N% of bars).
+   `precise_metronome/ramp` EventChannel). Timed steps shipped in 0.8.0
+   (`RampStepLength.time`, counted natively in audio frames, still
+   stepping on the bar line). Still open: random mute (silence N% of
+   bars).
 4. **Four-level accents** (silent / soft / normal / loud) if real
    musical use cases emerge.
 5. **User-supplied WAV samples.** Requirements doc already drafted in

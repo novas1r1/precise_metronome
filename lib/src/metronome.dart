@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:flutter/services.dart';
 
 import 'background_config.dart';
 import 'beat_event.dart';
+import 'gap_pattern.dart';
 import 'subdivision.dart';
 import 'tempo_ramp.dart';
 import 'time_signature.dart';
@@ -49,14 +51,45 @@ class Metronome {
   StreamSubscription<dynamic>? _beatSubscription;
   late final StreamController<BeatEvent> _beatController =
       StreamController<BeatEvent>.broadcast(
-    onListen: _enableBeatEvents,
-    onCancel: _disableBeatEvents,
+    onListen: _syncBeatEvents,
+    onCancel: _syncBeatEvents,
   );
   bool _includeSubdivisions = false;
 
+  // Gap pattern. Dart decides the bars (GapPatternGenerator) and hands them
+  // to the engine in segments, one per run of the pattern, numbered
+  // upwards. The engine starts a segment on the first bar it schedules
+  // after the segment arrived, and every beat event tells which segment
+  // and which bar of it is playing. Downbeats drive topping the bars up,
+  // and starting over when the engine has lost a segment.
+  GapPattern? _gapPattern;
+  int _gapSegment = 0;
+  GapPatternGenerator? _gapBars;
+
+  /// Bars of the newest segment the engine has; later ones are still to be
+  /// sent.
+  int _gapSent = 0;
+
+  /// The segment whose bars are on their way to the engine, if any.
+  int? _gapSending;
+
+  /// The session bar the newest segment took effect on, and whether that
+  /// bar was a landing. `null` until a beat event shows the engine started
+  /// the segment.
+  int? _gapFirstBar;
+  bool _gapFirstBarLanding = false;
+
+  /// The engine is kept supplied with gap bars for at least this long
+  /// ahead of the bar playing, and at least [_gapMinBarsAhead] bars. The
+  /// most that asks for is 27 bars (one beat at 400 BPM), well inside the
+  /// 64 bars the native plan keeps.
+  static const Duration _gapLookahead = Duration(seconds: 4);
+  static const int _gapMinBarsAhead = 8;
+
   double _bpm = 120.0;
   TimeSignature _timeSignature = TimeSignature(4, 4);
-  List<bool> _accentPattern = const [true, false, false, false];
+  /// One flag per pulse of the bar: `beat * pulsesPerBeat + pulse`.
+  List<bool> _pulseAccents = const [true, false, false, false];
   bool _accentEnabled = true;
   int _accentBeat = 0;
   Subdivision _subdivision = Subdivision.none;
@@ -88,8 +121,9 @@ class Metronome {
   /// moment it is heard (typically 2–10 ms behind the audio on iOS, 10–25 ms
   /// on Android — well below what the eye can notice).
   ///
-  /// Native emission is switched on while this stream has listeners and
-  /// off again when the last one cancels, so an idle app pays nothing.
+  /// Native emission is switched on while this stream has listeners, or
+  /// while a gap pattern is set (see [setGapPattern]), and off again after
+  /// that, so an idle app pays nothing.
   /// By default only main beats are sent; see [setBeatEventOptions] to
   /// include subdivision pulses.
   ///
@@ -106,7 +140,7 @@ class Metronome {
   Future<void> setBeatEventOptions({required bool includeSubdivisions}) async {
     _assertReady();
     _includeSubdivisions = includeSubdivisions;
-    if (_beatController.hasListener) {
+    if (_beatSubscription != null) {
       await _pushBeatEventOptions();
     }
   }
@@ -114,10 +148,22 @@ class Metronome {
   /// Current time signature.
   TimeSignature get timeSignature => _timeSignature;
 
-  /// Current accent pattern. Length always equals `timeSignature.beatsPerBar`.
-  List<bool> get accentPattern => List.unmodifiable(_accentPattern);
+  /// Current accent pattern, one flag per main beat. Length always equals
+  /// `timeSignature.beatsPerBar`. A beat counts as accented when its own
+  /// pulse is; see [pulseAccents] for accents on subdivision pulses.
+  List<bool> get accentPattern => List<bool>.unmodifiable(
+    List<bool>.generate(
+      _timeSignature.beatsPerBar,
+      (beat) => _pulseAccents[beat * _subdivision.pulsesPerBeat],
+    ),
+  );
 
-  /// Whether any beat in the bar is accented.
+  /// Current accent pattern, one flag per audible pulse of the bar, indexed
+  /// `beat * subdivision.pulsesPerBeat + pulse`. Length always equals
+  /// `timeSignature.beatsPerBar * subdivision.pulsesPerBeat`.
+  List<bool> get pulseAccents => List.unmodifiable(_pulseAccents);
+
+  /// Whether any pulse in the bar is accented.
   ///
   /// `false` means every beat uses the normal click, so the metronome
   /// sounds completely even. See [setAccentEnabled].
@@ -126,9 +172,9 @@ class Metronome {
   /// The beat the single accent sits on (0-based), as set by
   /// [setAccentBeat] and restored by `setAccentEnabled(true)`.
   ///
-  /// When a multi-accent pattern has been set via [setAccentPattern] this
-  /// keeps its last single-accent value; it only tracks patterns with
-  /// exactly one accent.
+  /// When a richer pattern has been set via [setAccentPattern] this keeps
+  /// its last single-accent value; it only tracks patterns whose one accent
+  /// sits on a main beat.
   int get accentBeat => _accentBeat;
 
   /// Current subdivision. Each main beat is split into
@@ -156,7 +202,7 @@ class Metronome {
     // user sets anything.
     await _pushState();
     // A listener may have subscribed to `beats` before init().
-    if (_beatController.hasListener) await _enableBeatEvents();
+    await _syncBeatEvents();
   }
 
   /// Starts the metronome from bar position zero.
@@ -176,6 +222,7 @@ class Metronome {
         'must not be negative',
       );
     }
+    await _prepareGapForStart();
     await _channel.invokeMethod<void>('start', {
       'initialDelayMs': initialDelay.inMilliseconds,
     });
@@ -184,16 +231,22 @@ class Metronome {
 
   /// Starts a progressive tempo ramp from bar position zero.
   ///
-  /// The tempo is set to `ramp.startBpm`, held for `ramp.barsPerStep`
-  /// bars, then moved `ramp.stepBpm` towards `ramp.goalBpm` — exactly on
-  /// the bar line, sample-accurately, on the native side. When the goal
-  /// tempo has been played for its bars the metronome stops itself and
-  /// [isPlaying] becomes `false`. Listen to [rampProgress] to follow the
-  /// steps.
+  /// The tempo is set to `ramp.startBpm`, held for one `ramp.stepLength`
+  /// (a number of bars, or a duration that ends at the next bar line), then
+  /// moved `ramp.stepBpm` towards `ramp.goalBpm` — exactly on the bar
+  /// line, sample-accurately, on the native side. When the goal tempo has
+  /// been played for its step the metronome stops itself and [isPlaying]
+  /// becomes `false`. Listen to [rampProgress] to follow the steps.
   ///
-  /// With `ramp.holdAtGoal` the metronome keeps clicking at the goal tempo
-  /// instead of stopping; [activeRamp] stays set and the last
-  /// [RampProgress] is the goal step (`isLastStep`). End it with [stop].
+  /// With `ramp.holdAtGoal` the metronome keeps clicking at the ramp's final
+  /// tempo instead of stopping; [activeRamp] stays set and the last
+  /// [RampProgress] is the final step (`isLastStep`). End it with [stop].
+  ///
+  /// With `ramp.returnToStart` the ramp turns around once the goal has been
+  /// played out and steps back down to `ramp.startBpm`. The turnaround is
+  /// handled by the same native ramp — the metronome does not stop and
+  /// restart — so it lands on the bar line as accurately as every other
+  /// step. [RampProgress.stepIndex] keeps counting through both legs.
   ///
   /// An open-ended ramp (`ramp.goalBpm == null`) keeps stepping up until
   /// [TempoRamp.maxBpm], holds there, and only ends with [stop].
@@ -222,6 +275,7 @@ class Metronome {
       // but keep the metronome usable.
       onError: _rampController.addError,
     );
+    await _prepareGapForStart();
     await _channel.invokeMethod<void>('startRamp', {
       'initialDelayMs': initialDelay.inMilliseconds,
       ...ramp.toMap(),
@@ -293,41 +347,47 @@ class Metronome {
     _assertReady();
     _timeSignature = signature;
     if (_accentBeat >= signature.beatsPerBar) _accentBeat = 0;
-    _accentPattern = List<bool>.generate(
-      signature.beatsPerBar,
-      (i) => _accentEnabled && i == _accentBeat,
-    );
+    _pulseAccents = _singleAccentPulses();
     await _channel.invokeMethod<void>('setTimeSignature', {
       'numerator': signature.numerator,
       'denominator': signature.denominator,
       'beatsPerBar': signature.beatsPerBar,
-      'accentPattern': _accentPattern,
+      'accentPattern': _pulseAccents,
     });
   }
 
-  /// Sets a custom accent pattern.
+  /// Sets a custom accent pattern. `true` = accent, `false` = normal.
   ///
-  /// Length must equal `timeSignature.beatsPerBar`. `true` = accent,
-  /// `false` = normal.
+  /// The length selects what a flag refers to:
   ///
-  /// [accentEnabled] and [accentBeat] follow the pattern: an all-`false`
-  /// pattern disables accents, and a pattern with exactly one accent
-  /// updates [accentBeat].
+  /// * `timeSignature.beatsPerBar` — one flag per main beat. Subdivision
+  ///   pulses keep the softer sub click.
+  /// * `timeSignature.beatsPerBar * subdivision.pulsesPerBeat` — one flag
+  ///   per audible pulse, indexed `beat * pulsesPerBeat + pulse`, so
+  ///   subdivision pulses can carry the accent click too.
+  ///
+  /// With [Subdivision.none] the two are the same length and mean the same
+  /// thing. Changing the subdivision keeps the main-beat accents and clears
+  /// any accents that were set on subdivision pulses.
   Future<void> setAccentPattern(List<bool> pattern) async {
     _assertReady();
-    if (pattern.length != _timeSignature.beatsPerBar) {
+    final beats = _timeSignature.beatsPerBar;
+    final pulses = _subdivision.pulsesPerBeat;
+    if (pattern.length == beats) {
+      _pulseAccents = _expandToPulses(pattern, pulses);
+    } else if (pattern.length == beats * pulses) {
+      _pulseAccents = List<bool>.from(pattern);
+    } else {
       throw ArgumentError(
         'Accent pattern length (${pattern.length}) must equal '
-        'timeSignature.beatsPerBar (${_timeSignature.beatsPerBar}).',
+        'timeSignature.beatsPerBar ($beats) or '
+        'timeSignature.beatsPerBar * subdivision.pulsesPerBeat '
+        '(${beats * pulses}).',
       );
     }
-    _accentPattern = List<bool>.from(pattern);
-    _accentEnabled = _accentPattern.contains(true);
-    if (_accentPattern.where((a) => a).length == 1) {
-      _accentBeat = _accentPattern.indexOf(true);
-    }
+    _syncSingleAccent();
     await _channel.invokeMethod<void>('setAccentPattern', {
-      'accentPattern': _accentPattern,
+      'accentPattern': _pulseAccents,
     });
   }
 
@@ -335,29 +395,28 @@ class Metronome {
   ///
   /// With [enabled] `false` every beat uses the normal click, so the bar
   /// sounds completely even. With `true` the accent returns to the beat it
-  /// was on before (see [accentBeat]; beat 1 by default).
+  /// was on before (see [accentBeat]; beat 1 by default). Accents that a
+  /// richer [setAccentPattern] had placed elsewhere are not restored.
   ///
-  /// Takes effect at the next beat, like [setAccentPattern].
+  /// Takes effect at the next pulse, like [setAccentPattern].
   Future<void> setAccentEnabled(bool enabled) async {
     _assertReady();
     _accentEnabled = enabled;
-    _accentPattern = List<bool>.generate(
-      _timeSignature.beatsPerBar,
-      (i) => enabled && i == _accentBeat,
-    );
+    _pulseAccents = _singleAccentPulses();
     await _channel.invokeMethod<void>('setAccentPattern', {
-      'accentPattern': _accentPattern,
+      'accentPattern': _pulseAccents,
     });
   }
 
   /// Puts the single accent on [beatIndex] (0-based) and removes it from
-  /// every other beat.
+  /// every other pulse.
   ///
   /// [beatIndex] must be less than `timeSignature.beatsPerBar` — in 4/4
   /// the valid positions are 0..3, in 3/4 they are 0..2. Calling this also
   /// re-enables the accent if it was disabled.
   ///
-  /// For more than one accent per bar, use [setAccentPattern].
+  /// For more than one accent per bar, or an accent on a subdivision
+  /// pulse, use [setAccentPattern].
   Future<void> setAccentBeat(int beatIndex) async {
     _assertReady();
     if (beatIndex < 0 || beatIndex >= _timeSignature.beatsPerBar) {
@@ -370,29 +429,68 @@ class Metronome {
     }
     _accentBeat = beatIndex;
     _accentEnabled = true;
-    _accentPattern = List<bool>.generate(
-      _timeSignature.beatsPerBar,
-      (i) => i == beatIndex,
-    );
+    _pulseAccents = _singleAccentPulses();
     await _channel.invokeMethod<void>('setAccentPattern', {
-      'accentPattern': _accentPattern,
+      'accentPattern': _pulseAccents,
     });
+  }
+
+  /// The pulse grid for the current single-accent state: one accent on
+  /// [accentBeat]'s own pulse, or nothing at all when disabled.
+  List<bool> _singleAccentPulses() {
+    final pulses = _subdivision.pulsesPerBeat;
+    return List<bool>.generate(
+      _timeSignature.beatsPerBar * pulses,
+      (i) => _accentEnabled && i == _accentBeat * pulses,
+    );
+  }
+
+  /// Keeps [accentEnabled] and [accentBeat] in step with the pattern that
+  /// was just set. A lone accent on a main beat moves [accentBeat]; a lone
+  /// accent on a subdivision pulse, or several accents, leave it alone.
+  void _syncSingleAccent() {
+    _accentEnabled = _pulseAccents.contains(true);
+    if (_pulseAccents.where((a) => a).length != 1) return;
+    final slot = _pulseAccents.indexOf(true);
+    final pulses = _subdivision.pulsesPerBeat;
+    if (slot % pulses == 0) _accentBeat = slot ~/ pulses;
+  }
+
+  /// Spreads one flag per beat over [pulsesPerBeat] pulses: the beat's own
+  /// pulse keeps the flag, the pulses in between are unaccented.
+  static List<bool> _expandToPulses(List<bool> perBeat, int pulsesPerBeat) {
+    return List<bool>.generate(
+      perBeat.length * pulsesPerBeat,
+      (i) => i % pulsesPerBeat == 0 && perBeat[i ~/ pulsesPerBeat],
+    );
   }
 
   /// Sets the subdivision — how each main beat is split into audible
   /// pulses.
   ///
-  /// The first pulse of each beat uses the accent or normal click (per
-  /// the current accent pattern); additional pulses use a softer "sub"
-  /// click. The tempo continues to refer to the main-beat rate.
+  /// Pulses carrying an accent (see [setAccentPattern]) use the accent
+  /// click; other main beats use the normal click and the pulses in
+  /// between use a softer "sub" click. The tempo continues to refer to the
+  /// main-beat rate.
+  ///
+  /// The accent pattern is rescaled to the new pulse grid: main-beat
+  /// accents are kept and any accents on subdivision pulses are cleared,
+  /// since those slots no longer line up.
   ///
   /// See [Subdivision] for the available options. Changes take effect
   /// at the next pulse boundary (within one main-beat interval).
   Future<void> setSubdivision(Subdivision subdivision) async {
     _assertReady();
-    _subdivision = subdivision;
+    if (subdivision != _subdivision) {
+      final perBeat = accentPattern;
+      _subdivision = subdivision;
+      _pulseAccents = _expandToPulses(perBeat, subdivision.pulsesPerBeat);
+    }
     await _channel.invokeMethod<void>('setSubdivision', {
       'pulsesPerBeat': subdivision.pulsesPerBeat,
+    });
+    await _channel.invokeMethod<void>('setAccentPattern', {
+      'accentPattern': _pulseAccents,
     });
   }
 
@@ -411,6 +509,63 @@ class Metronome {
     }
     _volume = volume;
     await _channel.invokeMethod<void>('setVolume', {'volume': volume});
+  }
+
+  /// The gap pattern set with [setGapPattern], or `null` when every bar
+  /// clicks.
+  GapPattern? get gapPattern => _gapPattern;
+
+  /// Silences bars by [pattern] while the clock keeps counting, or lets
+  /// every bar click again when [pattern] is `null`.
+  ///
+  /// The pattern starts from its beginning, with an audible bar, whenever
+  /// the metronome starts ([start] or [startRamp]) and whenever the pattern
+  /// is changed while playing. A change takes effect on the first bar the
+  /// engine has not scheduled yet: normally the next bar, or the one after
+  /// it when the next downbeat is only a few milliseconds away. Setting a
+  /// pattern equal to the current one changes nothing.
+  ///
+  /// The bars are decided in Dart and handed to the native engine several
+  /// seconds ahead. The engine does the silencing, so the click after a
+  /// gap lands exactly on the grid. Should the engine ever run out of
+  /// planned bars, for example because Dart was held up for a long time,
+  /// those bars click rather than stay silent, and the pattern starts over.
+  ///
+  /// [beats] marks silenced pulses with [BeatEvent.muted] and the first
+  /// audible bar after a gap with [BeatEvent.landing]. While a pattern is
+  /// set, native beat events stay switched on even without a listener,
+  /// because the hand-off relies on them.
+  Future<void> setGapPattern(GapPattern? pattern) async {
+    _assertReady();
+    if (pattern == _gapPattern) return;
+    _gapPattern = pattern;
+    await _syncBeatEvents();
+    if (_isPlaying) await _beginGapSegment();
+  }
+
+  /// Bar [barIndex] of the running session as the gap pattern plays it:
+  /// whether it is silent, and whether it is a landing.
+  ///
+  /// Bars count like [BeatEvent.barIndex]. Future bars are answered too,
+  /// so a UI can preview what comes next. Returns `null` while stopped,
+  /// without a gap pattern, and for bars before the pattern took effect,
+  /// which includes every bar until the engine has started a pattern that
+  /// was set a moment ago.
+  GapBar? gapBarAt(int barIndex) {
+    final bars = _gapBars;
+    final firstBar = _gapFirstBar;
+    if (!_isPlaying ||
+        bars == null ||
+        firstBar == null ||
+        barIndex < firstBar) {
+      return null;
+    }
+    final bar = bars.barAt(barIndex - firstBar);
+    return GapBar(
+      index: barIndex,
+      silent: bar.silent,
+      landing: barIndex == firstBar ? _gapFirstBarLanding : bar.landing,
+    );
   }
 
   /// Enables background playback.
@@ -467,23 +622,29 @@ class Metronome {
 
   // ---- internals ----
 
-  Future<void> _enableBeatEvents() async {
-    if (_disposed || !_initialized) return;
-    _beatSubscription ??= _beatChannel.receiveBroadcastStream().listen(
-      _onBeatEvent,
-      onError: _beatController.addError,
-    );
-    await _pushBeatEventOptions();
-  }
+  /// Native beat events are needed by a listener on [beats], and by a gap
+  /// pattern, whose hand-off they drive.
+  bool get _wantsBeatEvents =>
+      _beatController.hasListener || _gapPattern != null;
 
-  Future<void> _disableBeatEvents() async {
-    await _beatSubscription?.cancel();
-    _beatSubscription = null;
-    if (_disposed || !_initialized) return;
-    await _channel.invokeMethod<void>('setBeatEvents', {
-      'enabled': false,
-      'includeSubdivisions': _includeSubdivisions,
-    });
+  /// Switches native beat events on or off to match [_wantsBeatEvents].
+  Future<void> _syncBeatEvents() async {
+    if (_wantsBeatEvents) {
+      if (_disposed || !_initialized || _beatSubscription != null) return;
+      _beatSubscription = _beatChannel.receiveBroadcastStream().listen(
+        _onBeatEvent,
+        onError: _beatController.addError,
+      );
+      await _pushBeatEventOptions();
+    } else if (_beatSubscription != null) {
+      await _beatSubscription?.cancel();
+      _beatSubscription = null;
+      if (_disposed || !_initialized) return;
+      await _channel.invokeMethod<void>('setBeatEvents', {
+        'enabled': false,
+        'includeSubdivisions': _includeSubdivisions,
+      });
+    }
   }
 
   Future<void> _pushBeatEventOptions() {
@@ -495,12 +656,120 @@ class Metronome {
 
   void _onBeatEvent(dynamic event) {
     if (event is! Map) return;
-    _beatController.add(BeatEvent(
+    final beat = BeatEvent(
       barIndex: (event['bar'] as num?)?.toInt() ?? 0,
       beatIndex: (event['beat'] as num?)?.toInt() ?? 0,
       pulseIndex: (event['pulse'] as num?)?.toInt() ?? 0,
       accent: event['accent'] == true,
-    ));
+      muted: event['muted'] == true,
+      landing: event['landing'] == true,
+    );
+    // Before forwarding, so listeners already see the plan the beat
+    // belongs to through gapBarAt.
+    if (beat.isDownbeat) {
+      _followGapPlan(
+        beat,
+        segment: (event['gapSegment'] as num?)?.toInt() ?? 0,
+        index: (event['gapBar'] as num?)?.toInt() ?? -1,
+      );
+    }
+    _beatController.add(beat);
+  }
+
+  /// Plays the gap pattern from its beginning in the session about to
+  /// start. Once a pattern has been used, this also runs without one, so
+  /// no segment the engine still holds from before can play.
+  Future<void> _prepareGapForStart() async {
+    if (_gapPattern == null && _gapSegment == 0) return;
+    await _beginGapSegment();
+  }
+
+  /// Starts the gap pattern from its beginning on the next bar the engine
+  /// schedules, or, without a pattern, stops silencing there.
+  Future<void> _beginGapSegment() async {
+    final segment = ++_gapSegment;
+    final pattern = _gapPattern;
+    _gapBars = pattern == null ? null : GapPatternGenerator(pattern);
+    _gapSent = 0;
+    _gapFirstBar = null;
+    _gapFirstBarLanding = false;
+    if (pattern == null) {
+      await _channel.invokeMethod<void>('clearGapPlan', {'segment': segment});
+    } else {
+      await _sendGapBars(until: _gapBarsAhead);
+    }
+  }
+
+  /// Sends bars of the newest segment up to, but not including, [until].
+  /// When the engine refuses them, they are sent again on a later
+  /// downbeat.
+  Future<void> _sendGapBars({required int until}) async {
+    final bars = _gapBars;
+    final segment = _gapSegment;
+    final from = _gapSent;
+    if (bars == null || from >= until || _gapSending == segment) return;
+    _gapSending = segment;
+    try {
+      await _channel.invokeMethod<void>('setGapPlan', {
+        'segment': segment,
+        'from': from,
+        'silent': [for (var i = from; i < until; i++) bars.barAt(i).silent],
+      });
+      if (segment == _gapSegment && until > _gapSent) _gapSent = until;
+    } on PlatformException catch (error) {
+      developer.log(
+        'The engine did not take gap bars $from..${until - 1} of segment '
+        '$segment: ${error.message ?? error.code}',
+        name: 'precise_metronome',
+      );
+    } finally {
+      if (_gapSending == segment) _gapSending = null;
+    }
+  }
+
+  /// Follows the gap plan on every downbeat the engine reports: tops the
+  /// bars up, and starts the pattern over when the engine has lost it.
+  /// [segment] and [index] are the segment, and the bar within it, that
+  /// planned the downbeat's bar.
+  void _followGapPlan(
+    BeatEvent downbeat, {
+    required int segment,
+    required int index,
+  }) {
+    if (!_isPlaying || _gapBars == null) return;
+    if (segment == _gapSegment) {
+      if (index < 0) {
+        developer.log(
+          'The engine ran out of gap bars; the pattern starts over.',
+          name: 'precise_metronome',
+        );
+        unawaited(_beginGapSegment());
+        return;
+      }
+      if (_gapFirstBar == null) {
+        _gapFirstBar = downbeat.barIndex - index;
+        _gapFirstBarLanding = index == 0 && downbeat.landing;
+      }
+      final ahead = _gapBarsAhead;
+      if (_gapSent - index <= ahead ~/ 2) {
+        unawaited(_sendGapBars(until: index + ahead));
+      }
+    } else if (_gapFirstBar != null ||
+        (_gapSent == 0 && _gapSending != _gapSegment)) {
+      // The engine started the newest segment and then dropped it (Android
+      // does after an audio device error), or never got it. Waiting would
+      // leave every bar audible, so the pattern starts over.
+      unawaited(_beginGapSegment());
+    }
+    // Otherwise the engine has the newest segment but not started it yet.
+  }
+
+  /// Bars that cover [_gapLookahead] at the current tempo and meter.
+  int get _gapBarsAhead {
+    final barMicros =
+        Duration.microsecondsPerMinute / _bpm * _timeSignature.beatsPerBar;
+    final bars = (_gapLookahead.inMicroseconds / barMicros).ceil();
+    return bars < _gapMinBarsAhead ? _gapMinBarsAhead : bars;
   }
 
   void _onRampEvent(dynamic event) {
@@ -528,7 +797,7 @@ class Metronome {
       'numerator': _timeSignature.numerator,
       'denominator': _timeSignature.denominator,
       'beatsPerBar': _timeSignature.beatsPerBar,
-      'accentPattern': _accentPattern,
+      'accentPattern': _pulseAccents,
     });
     await _channel.invokeMethod<void>('setSubdivision', {
       'pulsesPerBeat': _subdivision.pulsesPerBeat,

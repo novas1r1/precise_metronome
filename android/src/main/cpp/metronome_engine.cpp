@@ -12,7 +12,7 @@
 namespace precise_metronome {
 
 MetronomeEngine::MetronomeEngine() {
-    // Default accent pattern: beat 1 accented, rest unaccented.
+    // Default accent pattern: the bar's first pulse accented.
     accent_pattern_[0] = true;
     for (int i = 1; i < kMaxPattern; ++i) accent_pattern_[i] = false;
     active_clicks_.reserve(kMaxActiveClicks);
@@ -24,6 +24,14 @@ MetronomeEngine::~MetronomeEngine() {
 
 bool MetronomeEngine::initialize() {
     std::lock_guard<std::mutex> lock(stream_mutex_);
+    if (!start_stream()) {
+        return false;
+    }
+    LOGI("Engine initialized at %d Hz", sample_rate_);
+    return true;
+}
+
+bool MetronomeEngine::start_stream() {
     if (!open_stream()) {
         return false;
     }
@@ -39,11 +47,9 @@ bool MetronomeEngine::initialize() {
     oboe::Result result = stream_->requestStart();
     if (result != oboe::Result::OK) {
         LOGE("Failed to start stream: %s", oboe::convertToText(result));
-        stream_->close();
-        stream_.reset();
+        close_stream();
         return false;
     }
-    LOGI("Engine initialized at %d Hz", sample_rate_);
     return true;
 }
 
@@ -105,13 +111,17 @@ void MetronomeEngine::start(int64_t initial_delay_ms) {
 
 void MetronomeEngine::start_ramp(int64_t initial_delay_ms, double start_bpm,
                                  double goal_bpm, bool stop_at_goal,
-                                 double step_bpm, int bars_per_step) {
+                                 double step_bpm, int bars_per_step,
+                                 int64_t step_ms, bool return_to_start) {
     bpm_.store(start_bpm, std::memory_order_relaxed);
     ramp_goal_bpm_.store(goal_bpm, std::memory_order_relaxed);
+    ramp_return_to_start_.store(return_to_start, std::memory_order_relaxed);
     ramp_stop_at_goal_.store(stop_at_goal, std::memory_order_relaxed);
     ramp_step_bpm_.store(step_bpm, std::memory_order_relaxed);
     ramp_bars_per_step_.store(std::max(bars_per_step, 1),
                               std::memory_order_relaxed);
+    ramp_step_ms_.store(std::max<int64_t>(step_ms, 0),
+                        std::memory_order_relaxed);
     ramp_step_index_.store(0, std::memory_order_relaxed);
     ramp_bpm_.store(start_bpm, std::memory_order_relaxed);
     ramp_finished_.store(false, std::memory_order_relaxed);
@@ -180,6 +190,15 @@ void MetronomeEngine::set_volume(double volume) {
     volume_.store(std::clamp(volume, 0.0, 1.0), std::memory_order_relaxed);
 }
 
+bool MetronomeEngine::set_gap_bars(int32_t segment, int32_t from,
+                                   const uint8_t* silent, int32_t count) {
+    return gap_plan_.set_bars(segment, from, silent, count);
+}
+
+void MetronomeEngine::clear_gap_plan(int32_t segment) {
+    gap_plan_.clear(segment);
+}
+
 void MetronomeEngine::set_beat_events(bool enabled, bool include_subdivisions) {
     beat_events_include_sub_.store(include_subdivisions,
                                    std::memory_order_relaxed);
@@ -210,47 +229,81 @@ void MetronomeEngine::onErrorAfterClose(oboe::AudioStream* /*stream*/,
     LOGE("Audio stream error after close: %s", oboe::convertToText(result));
     std::lock_guard<std::mutex> lock(stream_mutex_);
     stream_.reset();
-    if (open_stream()) {
-        rebuild_buffers(static_cast<double>(sample_rate_));
-        for (int v = 0; v < kVoiceCount; ++v) {
-            buffers_current_[v] = buffers_next_[v];
-        }
-        buffers_pending_.store(false, std::memory_order_release);
-        oboe::Result start_result = stream_->requestStart();
-        if (start_result != oboe::Result::OK) {
-            LOGE("Failed to restart after error: %s",
-                 oboe::convertToText(start_result));
-        }
+    if (start_stream()) {
+        LOGI("Stream reopened at %d Hz", sample_rate_);
     }
+    // A gap pattern starts over after a device error: bars play audible
+    // until Dart notices the dropped segment and sends a new one.
+    gap_plan_.request_restart();
+}
+
+int64_t MetronomeEngine::frames_per_pulse(double bpm,
+                                          int pulses_per_beat) const {
+    return std::max<int64_t>(
+        static_cast<int64_t>(
+            (60.0 / bpm / static_cast<double>(std::max(pulses_per_beat, 1))) *
+            static_cast<double>(sample_rate_)),
+        1);
 }
 
 // Called on the audio thread after the last pulse of a bar has been
 // scheduled. Advances the ramp; returns true once the goal tempo has been
-// played for its full number of bars and the ramp should stop the engine.
-bool MetronomeEngine::on_ramp_bar_completed() {
-    if (++ramp_bars_in_step_ <
-        ramp_bars_per_step_.load(std::memory_order_relaxed)) {
-        return false;
+// played for its full step and the ramp should stop the engine.
+bool MetronomeEngine::on_ramp_bar_completed(int64_t upcoming_downbeat_frame) {
+    if (ramp_step_frames_ > 0) {
+        // Timed step: hold until the bar line at or after the deadline.
+        if (upcoming_downbeat_frame - ramp_step_start_frame_ <
+            ramp_step_frames_) {
+            return false;
+        }
+        // The next step starts on the downbeat about to be scheduled; its
+        // exact frame is only known once the (possibly new) tempo has been
+        // applied, so the scheduler records it.
+        ramp_step_start_pending_ = true;
+    } else {
+        if (++ramp_bars_in_step_ <
+            ramp_bars_per_step_.load(std::memory_order_relaxed)) {
+            return false;
+        }
+        ramp_bars_in_step_ = 0;
     }
-    ramp_bars_in_step_ = 0;
 
-    const double goal = ramp_goal_bpm_.load(std::memory_order_relaxed);
     const double step = ramp_step_bpm_.load(std::memory_order_relaxed);
-    const bool ascending = goal >= ramp_current_bpm_;
-    const bool at_goal = ascending ? (ramp_current_bpm_ >= goal)
-                                   : (ramp_current_bpm_ <= goal);
-    if (at_goal || step <= 0.0) {
-        // Open-ended ramps just keep holding the limit tempo.
+    if (step <= 0.0) {
         return ramp_stop_at_goal_.load(std::memory_order_relaxed);
     }
+    if (ramp_at_goal()) {
+        // The goal tempo has had its bars. Turn around once if a return
+        // leg was requested; otherwise this is the end of the ramp.
+        // Open-ended ramps just keep holding the limit tempo.
+        if (!ramp_return_pending_) {
+            return ramp_stop_at_goal_.load(std::memory_order_relaxed);
+        }
+        ramp_return_pending_ = false;
+        ramp_effective_goal_ = ramp_return_bpm_;
+        // A ramp that never left its start has nothing to return from.
+        if (ramp_at_goal()) {
+            return ramp_stop_at_goal_.load(std::memory_order_relaxed);
+        }
+    }
+    const bool ascending = ramp_effective_goal_ >= ramp_current_bpm_;
     double next = ascending ? ramp_current_bpm_ + step
                             : ramp_current_bpm_ - step;
-    next = ascending ? std::min(next, goal) : std::max(next, goal);
+    next = ascending ? std::min(next, ramp_effective_goal_)
+                     : std::max(next, ramp_effective_goal_);
     ramp_current_bpm_ = next;
     bpm_.store(next, std::memory_order_relaxed);
     ramp_bpm_.store(next, std::memory_order_relaxed);
     ramp_step_index_.fetch_add(1, std::memory_order_release);
     return false;
+}
+
+// True when the current tempo has reached the tempo the ramp is heading
+// for. Audio thread only.
+bool MetronomeEngine::ramp_at_goal() const {
+    return ramp_effective_goal_ >= ramp_current_bpm_
+               ? ramp_current_bpm_ >= ramp_effective_goal_
+               : ramp_current_bpm_ <= ramp_effective_goal_;
 }
 
 oboe::DataCallbackResult MetronomeEngine::onAudioReady(
@@ -284,8 +337,22 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         pending_nudge_frames_.store(0, std::memory_order_release);
         ramp_active_ = ramp_enabled_.load(std::memory_order_acquire);
         ramp_bars_in_step_ = 0;
+        // The stream is open here, so the sample rate is final.
+        ramp_step_frames_ =
+            ramp_step_ms_.load(std::memory_order_relaxed) * sample_rate_ / 1000;
+        ramp_step_start_pending_ = false;
         ramp_current_bpm_ = bpm_.load(std::memory_order_relaxed);
+        ramp_effective_goal_ = ramp_goal_bpm_.load(std::memory_order_relaxed);
+        ramp_return_bpm_ = ramp_current_bpm_;
+        ramp_return_pending_ =
+            ramp_return_to_start_.load(std::memory_order_relaxed);
+        gap_plan_.reset();
     }
+
+    // Gap bars sent since the last callback. Taken in after the session
+    // reset above, so a segment sent right before start() is still there
+    // for the session's first bar.
+    gap_plan_.apply_commands();
 
     // Subdivision change: snap to a clean beat boundary at the next pulse.
     if (realign_pulse_requested_.exchange(false, std::memory_order_acq_rel)) {
@@ -327,11 +394,7 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         const double bpm_now = bpm_.load(std::memory_order_relaxed);
         const int ppb_now = std::max(
             pulses_per_beat_.load(std::memory_order_relaxed), 1);
-        const int64_t frames_per_pulse_now = std::max<int64_t>(
-            static_cast<int64_t>(
-                (60.0 / bpm_now / static_cast<double>(ppb_now)) *
-                static_cast<double>(sample_rate_)),
-            1);
+        const int64_t frames_per_pulse_now = frames_per_pulse(bpm_now, ppb_now);
 
         if (!has_anchor_) {
             // First buffer of this play session: anchor the first pulse
@@ -344,6 +407,9 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
                 initial_delay_frames_.load(std::memory_order_acquire);
             last_pulse_frame_ = next_pulse_frame_ - frames_per_pulse_now;
             has_anchor_ = true;
+            // The first pulse is the first downbeat: a timed ramp's first
+            // step starts here.
+            ramp_step_start_frame_ = next_pulse_frame_;
         }
 
         // Apply any pending phase nudge: shift the next pulse, but never
@@ -364,27 +430,28 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
         }
 
         while (next_pulse_frame_ < buf_end) {
+            // Decided once per bar, before its first pulse.
+            const GapPlan::Bar gap = gap_plan_.at(bar_index_);
             if (next_pulse_frame_ >= buf_start) {
                 const int offset =
                     static_cast<int>(next_pulse_frame_ - buf_start);
 
-                // Pick the buffer for this pulse. Main beat (pulse 0 within
-                // the beat) uses accent/normal per the pattern; off-beat
-                // subdivision pulses use the sub buffer.
-                const std::vector<float>* src_ptr = nullptr;
-                if (pulse_index_in_beat_ == 0) {
-                    const int pattern_len =
-                        pattern_length_.load(std::memory_order_acquire);
-                    const int idx = (pattern_len > 0)
-                                        ? (beat_index_in_bar_ % pattern_len)
-                                        : 0;
-                    const bool accent = (idx < kMaxPattern)
-                                            ? accent_pattern_[idx]
-                                            : (idx == 0);
-                    src_ptr = accent ? &accent_buf : &normal_buf;
-                } else {
-                    src_ptr = &sub_buf;
-                }
+                // Pick the buffer for this pulse. The pattern carries one
+                // flag per pulse of the bar, so a subdivision pulse can be
+                // accented too. An unaccented pulse uses the normal click
+                // on a main beat and the softer sub click in between.
+                const int slot =
+                    beat_index_in_bar_ * ppb_now + pulse_index_in_beat_;
+                const int pattern_len =
+                    pattern_length_.load(std::memory_order_acquire);
+                const bool accent =
+                    (pattern_len > 0)
+                        ? accent_pattern_[slot % pattern_len]
+                        : (slot == 0);
+                const std::vector<float>* src_ptr =
+                    accent ? &accent_buf
+                           : (pulse_index_in_beat_ == 0 ? &normal_buf
+                                                        : &sub_buf);
 
                 if (beat_events_enabled_.load(std::memory_order_relaxed) &&
                     (pulse_index_in_beat_ == 0 ||
@@ -393,13 +460,23 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
                     const uint32_t w =
                         beat_write_count_.load(std::memory_order_relaxed);
                     beat_ring_[w % kBeatRingSize] = {
-                        bar_index_, beat_index_in_bar_, pulse_index_in_beat_,
-                        (src_ptr == &accent_buf) ? 1 : 0};
+                        bar_index_,
+                        beat_index_in_bar_,
+                        pulse_index_in_beat_,
+                        (src_ptr == &accent_buf) ? 1 : 0,
+                        gap.silent ? 1 : 0,
+                        gap.landing ? 1 : 0,
+                        gap.segment,
+                        gap.index,
+                    };
                     beat_write_count_.store(w + 1, std::memory_order_release);
                 }
 
+                // A silent bar keeps its place in time; it just adds no
+                // click.
                 const auto& src = *src_ptr;
-                const int src_len = static_cast<int>(src.size());
+                const int src_len =
+                    gap.silent ? 0 : static_cast<int>(src.size());
                 if (src_len > 0) {
                     const int fits_in_buffer =
                         std::min(src_len, num_frames - offset);
@@ -429,7 +506,10 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
                 beat_index_in_bar_ = (beat_index_in_bar_ + 1) % bpb;
                 if (beat_index_in_bar_ == 0) ++bar_index_;
                 if (beat_index_in_bar_ == 0 && ramp_active_ &&
-                    on_ramp_bar_completed()) {
+                    on_ramp_bar_completed(
+                        next_pulse_frame_ +
+                        frames_per_pulse(
+                            bpm_.load(std::memory_order_relaxed), ppb))) {
                     // Goal tempo played out: stop scheduling. Clicks
                     // already in active_clicks_ still ring out.
                     playing_.store(false, std::memory_order_release);
@@ -439,12 +519,15 @@ oboe::DataCallbackResult MetronomeEngine::onAudioReady(
                 }
             }
 
-            const double bpm = bpm_.load(std::memory_order_relaxed);
-            const int64_t frames_per_pulse = static_cast<int64_t>(
-                (60.0 / bpm / static_cast<double>(ppb)) *
-                static_cast<double>(sample_rate_));
             last_pulse_frame_ = next_pulse_frame_;
-            next_pulse_frame_ += (frames_per_pulse > 0 ? frames_per_pulse : 1);
+            next_pulse_frame_ += frames_per_pulse(
+                bpm_.load(std::memory_order_relaxed), ppb);
+            if (ramp_step_start_pending_) {
+                // next_pulse_frame_ is now the downbeat that opens the new
+                // step, at the tempo the step just applied.
+                ramp_step_start_frame_ = next_pulse_frame_;
+                ramp_step_start_pending_ = false;
+            }
         }
     } else {
         // Not playing: make sure we'll re-anchor when we resume.

@@ -23,7 +23,9 @@ internal object NativeBridge {
         goalBpm: Double,
         stopAtGoal: Boolean,
         stepBpm: Double,
-        barsPerStep: Int
+        barsPerStep: Int,
+        stepMs: Long,
+        returnToStart: Boolean
     )
     /** Returns [stepIndex, bpm, finished (0/1)] of the running ramp. */
     @JvmStatic external fun nativeRampState(handle: Long): DoubleArray
@@ -40,7 +42,8 @@ internal object NativeBridge {
         accentPattern: BooleanArray
     )
     @JvmStatic external fun nativeSetSubdivision(handle: Long, pulsesPerBeat: Int)
-    @JvmStatic external fun nativeSetVoice(handle: Long, voiceIndex: Int)
+    /** Selects a voice by its Dart name; false for an unknown name. */
+    @JvmStatic external fun nativeSetVoice(handle: Long, voice: String): Boolean
     @JvmStatic external fun nativeSetVolume(handle: Long, volume: Double)
 
     @JvmStatic external fun nativeSetBeatEvents(
@@ -48,6 +51,22 @@ internal object NativeBridge {
         enabled: Boolean,
         includeSubdivisions: Boolean
     )
-    /** Pending beat events flattened as [bar, beat, pulse, accent, ...]. */
+    /**
+     * Pending beat events flattened as
+     * [bar, beat, pulse, accent, muted, landing, gapSegment, gapBar, ...].
+     */
     @JvmStatic external fun nativeDrainBeatEvents(handle: Long): IntArray
+
+    /**
+     * Stores which bars of a gap segment are silent; false when the audio
+     * thread has not taken in earlier bars yet.
+     */
+    @JvmStatic external fun nativeSetGapBars(
+        handle: Long,
+        segment: Int,
+        from: Int,
+        silent: BooleanArray
+    ): Boolean
+    /** Starts a gap segment that silences nothing. */
+    @JvmStatic external fun nativeClearGapPlan(handle: Long, segment: Int)
 }

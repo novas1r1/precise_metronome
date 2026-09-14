@@ -1,0 +1,6 @@
+import React from 'react';
+export function Switch({checked,onChange,label,description,disabled,style}){
+return <label style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:16,cursor:disabled?'default':'pointer',opacity:disabled?0.4:1,...style}}>
+{(label||description)&&<span style={{display:'flex',flexDirection:'column',gap:2}}><span style={{font:'500 16px var(--font-body)',color:'var(--text-primary)'}}>{label}</span>{description&&<span style={{font:'13px var(--font-body)',color:'var(--text-secondary)'}}>{description}</span>}</span>}
+<span onClick={()=>!disabled&&onChange(!checked)} role="switch" aria-checked={checked} style={{position:'relative',width:52,height:30,flex:'none',borderRadius:'var(--radius-pill)',background:checked?'var(--accent)':'var(--surface-glass-strong)',border:'1px solid '+(checked?'transparent':'var(--surface-glass-border)'),boxShadow:checked?'0 0 18px var(--accent-glow)':'none',transition:'all var(--dur-base) var(--ease-out)'}}>
+<span style={{position:'absolute',top:3,left:checked?24:3,width:22,height:22,borderRadius:'50%',background:checked?'var(--navy-950)':'var(--ink-200)',transition:'left var(--dur-base) var(--ease-spring),background var(--dur-base)'}}/></span></label>;}
