@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — Swift Package Manager on iOS
+
+- The iOS plugin is now a Swift package (`ios/precise_metronome/Package.swift`)
+  and no longer ships a CocoaPods podspec. Apps need Flutter's Swift Package
+  Manager support, which is on by default since Flutter 3.44.
+
 ## Unreleased — Media notification on Android
 
 - The background notification is now media-style, backed by a
