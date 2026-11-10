@@ -108,14 +108,20 @@ final class MetronomeEngine {
         subscribeToInterruptions()
 
         engine.attach(playerNode)
+        connectGraph()
 
-        // Use the hardware output format for the connection so we match
-        // the device's native rate; scheduled buffers are rendered at
-        // whatever rate the synth used, and AVAudioEngine handles the
-        // conversion if they differ — but we keep them aligned by
-        // synthesizing at the same rate.
-        let outputFormat = engine.outputNode.outputFormat(forBus: 0)
-        sampleRate = outputFormat.sampleRate
+        try engine.start()
+    }
+
+    /// Connects the player at the hardware output rate and renders the
+    /// click buffers at that same rate, so scheduled sample times and the
+    /// buffers agree. Runs at init and again after every engine
+    /// configuration change (the output rate can differ per route, e.g.
+    /// speaker vs. AirPods). Before scheduling starts, or on serialQueue.
+    private func connectGraph() {
+        let outputRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
+        // 0 when there is momentarily no output route; keep the old rate.
+        if outputRate > 0 { sampleRate = outputRate }
 
         let monoFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -123,12 +129,26 @@ final class MetronomeEngine {
             channels: 1,
             interleaved: false
         )
+        engine.disconnectNodeOutput(playerNode)
         engine.connect(playerNode, to: engine.mainMixerNode, format: monoFormat)
 
-        // Pre-render the default voice so there's no first-click latency.
+        // Pre-render the current voice so there's no first-click latency.
         buffers = ClickSynth.render(voice: currentVoice, sampleRate: sampleRate)
+    }
 
-        try engine.start()
+    /// The engine is stopped by the system after an interruption or a
+    /// configuration change; starting the player on a stopped engine is
+    /// silent (no render time, so the scheduler never anchors). serialQueue.
+    @discardableResult
+    private func ensureEngineRunning() -> Bool {
+        if engine.isRunning { return true }
+        do {
+            try AVAudioSession.sharedInstance().setActive(true, options: [])
+            try engine.start()
+            return true
+        } catch {
+            return false
+        }
     }
 
     func start(initialDelaySeconds: Double = 0) {
@@ -181,6 +201,7 @@ final class MetronomeEngine {
     /// Must be called on serialQueue.
     private func beginSession(initialDelaySeconds: Double) {
         guard !isPlaying else { return }
+        guard ensureEngineRunning() else { return }
         isPlaying = true
         beatIndexInBar = 0
         pulseIndexInBeat = 0
@@ -344,8 +365,14 @@ final class MetronomeEngine {
     }
 
     /// A phone call or another app taking the session stops the metronome.
-    /// It does not resume by itself. Route changes (headphones unplugged)
-    /// need no handling: a `.playback` session keeps playing through them.
+    /// It does not resume by itself.
+    ///
+    /// Route changes DO need handling. The session keeps playing through
+    /// them, but when the hardware format changes (e.g. AirPods connected
+    /// after init) AVAudioEngine stops itself and posts
+    /// `AVAudioEngineConfigurationChange`. Without a restart the player has
+    /// no render time, `schedulerTick` bails every tick, and the metronome
+    /// is silent until the app is relaunched.
     private func subscribeToInterruptions() {
         NotificationCenter.default.addObserver(
             self,
@@ -353,6 +380,51 @@ final class MetronomeEngine {
             name: AVAudioSession.interruptionNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleEngineConfigurationChange(_:)),
+            name: .AVAudioEngineConfigurationChange,
+            object: engine
+        )
+    }
+
+    @objc private func handleEngineConfigurationChange(_ note: Notification) {
+        serialQueue.async { [weak self] in
+            self?.rebuildAfterConfigurationChange()
+        }
+    }
+
+    /// Reconnects at the new output rate and, if a session was playing,
+    /// picks it up again at the same bar/beat on the new sample clock.
+    /// serialQueue only.
+    private func rebuildAfterConfigurationChange() {
+        let wasPlaying = isPlaying
+        timer?.cancel()
+        timer = nil
+        // Drops anything already scheduled; the player's sample clock
+        // restarts from 0 on the next play().
+        playerNode.stop()
+
+        let oldRate = sampleRate
+        connectGraph()
+        if oldRate > 0, sampleRate != oldRate {
+            rampStepFrames = AVAudioFramePosition(
+                Double(rampStepFrames) * sampleRate / oldRate)
+        }
+
+        guard ensureEngineRunning() else {
+            isPlaying = false
+            rampActive = false
+            return
+        }
+        guard wasPlaying else { return }
+
+        // Keep counters, ramp and gap state; only re-anchor on the new
+        // clock. A timed ramp step restarts its timer from the re-anchor.
+        hasAnchor = false
+        initialDelayFrames = 0
+        playerNode.play()
+        startTimer()
     }
 
     @objc private func handleInterruption(_ note: Notification) {

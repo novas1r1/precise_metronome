@@ -6,6 +6,18 @@
   and no longer ships a CocoaPods podspec. Apps need Flutter's Swift Package
   Manager support, which is on by default since Flutter 3.44.
 
+## Unreleased — iOS: survive audio route changes
+
+- Fixed: on iOS the metronome went silent after Bluetooth headphones
+  (e.g. AirPods) were connected while the app was running. iOS stops
+  `AVAudioEngine` when the output hardware changes, and nothing restarted
+  it. The engine now listens for `AVAudioEngineConfigurationChange`,
+  reconnects at the new output sample rate, re-renders the clicks and, if
+  it was playing, carries on at the same bar and beat.
+- Fixed: `start()` after a phone call or other interruption was silent on
+  iOS, because the engine the interruption stopped was never restarted.
+  Starting now reactivates the session and restarts the engine first.
+
 ## Unreleased — Media notification on Android
 
 - The background notification is now media-style, backed by a
