@@ -55,11 +55,13 @@ lib/
     background_config.dart            AndroidNotificationConfig
 
 ios/
-  precise_metronome.podspec
-  Classes/
-    PreciseMetronomePlugin.swift      Flutter plugin entry + dispatch
-    MetronomeEngine.swift             AVAudioEngine + scheduler
-    ClickSynth.swift                  tone + click DSP
+  precise_metronome/
+    Package.swift                     Swift package (no CocoaPods)
+    Sources/precise_metronome/
+      PreciseMetronomePlugin.swift    Flutter plugin entry + dispatch
+      MetronomeEngine.swift           AVAudioEngine + scheduler
+      ClickSynth.swift                tone + click DSP
+      GapPlan.swift                   gap click trainer plan
 
 android/
   build.gradle                        AGP 8.2, Kotlin 1.9.22, NDK, Oboe 1.9.0
